@@ -14,7 +14,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Create WebView
+        // Initialize WebView
         webView = WebView(this)
         setContentView(webView)
 
@@ -29,7 +29,7 @@ class MainActivity : AppCompatActivity() {
         settings.loadWithOverviewMode = true
         settings.useWideViewPort = true
 
-        // Force links to stay in the app
+        // Ensure links stay inside the app
         webView.webViewClient = WebViewClient()
 
         // Load the URL
@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
         if (webView.canGoBack()) {
             webView.goBack()
         } else {
+            @Suppress("DEPRECATION")
             super.onBackPressed()
         }
     }
