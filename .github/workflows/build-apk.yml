@@ -18,8 +18,8 @@ jobs:
           cache: gradle
 
       # THIS IS THE CRITICAL FIX: FORCING VERSION 8.5
-      - name: Repair Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.5
+     - name: Repair Gradle Wrapper
+        run: gradle wrapper --gradle-version 8.5 --distribution-type bin
 
       - name: Inject Website Data
         run: |
