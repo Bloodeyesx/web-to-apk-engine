@@ -17,15 +17,13 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      # THIS STEP FIXES THE ERROR BY GENERATING THE MISSING JAR FILE
+      - name: Repair Gradle Wrapper
+        run: gradle wrapper
+
       - name: Inject Website Data
         run: |
-          # 1. Update the App Name in strings.xml
-          # We look for the app_name tag and replace its content
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
-          
-          # 2. Update the URL in MainActivity.kt
-          # This assumes you have a placeholder string in your MainActivity
-          # If you haven't edited MainActivity.kt yet, do that next (see Step 2 below)
           find app/src/main/java -name "MainActivity.kt" -exec sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" {} +
 
       - name: Grant execute permission for gradlew
