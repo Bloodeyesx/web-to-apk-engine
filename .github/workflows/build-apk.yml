@@ -17,9 +17,9 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # THIS STEP FIXES THE ERROR BY GENERATING THE MISSING JAR FILE
+      # WE FORCE VERSION 8.5 TO ENSURE COMPATIBILITY
       - name: Repair Gradle Wrapper
-        run: gradle wrapper
+        run: gradle wrapper --gradle-version 8.5
 
       - name: Inject Website Data
         run: |
