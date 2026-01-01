@@ -17,41 +17,41 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # 1. Force Gradle 8.5 to avoid the "Mutation" error
+      # 1. Force Gradle 8.5 to maintain compatibility with Android Gradle Plugin 8.2.2
       - name: Repair Gradle Wrapper
         run: gradle wrapper --gradle-version 8.5 --distribution-type bin
 
-      # 2. Inject Website URL and App Name into the code
+      # 2. Inject Website URL and App Name into the project files
       - name: Inject Website Data
         run: |
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
           find app/src/main/java -name "MainActivity.kt" -exec sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" {} +
 
-      # 3. Reconstruct the Keystore from your GitHub Secret
+      # 3. Reconstruct the Keystore file in the ROOT workspace folder
       - name: Decode Keystore
-        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > app/release-key.jks
+        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > $GITHUB_WORKSPACE/release-key.jks
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # 4. Build BOTH the APK (for testing) and AAB (for Play Store)
-      # This command also signs the app using the secrets you saved
+      # 4. Build both the AAB (for Play Store) and APK (for testing)
+      # Uses the $GITHUB_WORKSPACE path to ensure the key is found
       - name: Build and Sign Release App
         run: |
           ./gradlew bundleRelease assembleDebug \
-            -Pandroid.injected.signing.store.file=release-key.jks \
+            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
             -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
             -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
             -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
 
-      # 5. Upload the AAB file (Upload this to Google Play Console)
+      # 5. Upload the signed .aab file (For Google Play Console)
       - name: Upload Release AAB
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.client_payload.name }}-PlayStore-Bundle
+          name: ${{ github.event.client_payload.name }}-Release-Bundle
           path: app/build/outputs/bundle/release/app-release.aab
 
-      # 6. Upload the APK file (Install this on your phone for testing)
+      # 6. Upload the debug .apk file (For immediate testing on your phone)
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
