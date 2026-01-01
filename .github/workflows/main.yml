@@ -1,0 +1,9 @@
+name: Legacy Build (Disabled)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "This workflow is disabled. Use build-apk.yml instead."
