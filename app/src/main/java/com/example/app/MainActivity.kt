@@ -7,17 +7,40 @@ import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val webView = WebView(this)
+        
+        // Create WebView
+        webView = WebView(this)
         setContentView(webView)
 
-        val siteUrl = "PLACEHOLDER_URL" 
+        // The GitHub Action will replace this placeholder
+        val siteUrl = "PLACEHOLDER_URL"
 
-        webView.settings.javaScriptEnabled = true
-        webView.settings.domStorageEnabled = true
+        // Webview Settings
+        val settings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.databaseEnabled = true
+        settings.loadWithOverviewMode = true
+        settings.useWideViewPort = true
+
+        // Force links to stay in the app
         webView.webViewClient = WebViewClient()
+
+        // Load the URL
         webView.loadUrl(siteUrl)
+    }
+
+    override fun onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
+        }
     }
 }
