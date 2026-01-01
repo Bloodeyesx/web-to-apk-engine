@@ -21,37 +21,37 @@ jobs:
       - name: DYNAMIC INJECTION (The Secret Sauce)
         run: |
           # 1. Update App Name
-          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
+          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.general.name }}</string>|g" app/src/main/res/values/strings.xml
           
           # 2. Find and Sync MainActivity.kt
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
-          sed -i "s|package .*|package ${{ github.event.client_payload.package_id }}|g" $KOTLIN_PATH
-          sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" $KOTLIN_PATH
+          sed -i "s|package .*|package ${{ github.event.client_payload.general.package_id }}|g" $KOTLIN_PATH
+          sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.general.url }}|g" $KOTLIN_PATH
 
           # 3. Update build.gradle.kts
-          sed -i "s|namespace = \".*\"|namespace = \"${{ github.event.client_payload.package_id }}\"|g" app/build.gradle.kts
-          sed -i "s|applicationId = \".*\"|applicationId = \"${{ github.event.client_payload.package_id }}\"|g" app/build.gradle.kts
-          sed -i "s|versionCode = .*|versionCode = ${{ github.event.client_payload.version_code }}|g" app/build.gradle.kts
-          sed -i "s|versionName = \".*\"|versionName = \"${{ github.event.client_payload.version_name }}\"|g" app/build.gradle.kts
+          sed -i "s|namespace = \".*\"|namespace = \"${{ github.event.client_payload.general.package_id }}\"|g" app/build.gradle.kts
+          sed -i "s|applicationId = \".*\"|applicationId = \"${{ github.event.client_payload.general.package_id }}\"|g" app/build.gradle.kts
+          sed -i "s|versionCode = .*|versionCode = ${{ github.event.client_payload.general.version_code }}|g" app/build.gradle.kts
+          sed -i "s|versionName = \".*\"|versionName = \"${{ github.event.client_payload.general.version_name }}\"|g" app/build.gradle.kts
           sed -i "s|compileSdk = .*|compileSdk = 35|g" app/build.gradle.kts
           sed -i "s|targetSdk = .*|targetSdk = 35|g" app/build.gradle.kts
 
           # 4. Inject Theme Color (Best Effort)
-          if [ ! -z "${{ github.event.client_payload.theme_color }}" ]; then
-             echo "Injecting Theme Color: ${{ github.event.client_payload.theme_color }}"
-             sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">${{ github.event.client_payload.theme_color }}</color>|g" app/src/main/res/values/colors.xml || true
-             sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">${{ github.event.client_payload.theme_color }}</color>|g" app/src/main/res/values/colors.xml || true
+          if [ ! -z "${{ github.event.client_payload.design.theme_color }}" ]; then
+             echo "Injecting Theme Color: ${{ github.event.client_payload.design.theme_color }}"
+             sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">${{ github.event.client_payload.design.theme_color }}</color>|g" app/src/main/res/values/colors.xml || true
+             sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">${{ github.event.client_payload.design.theme_color }}</color>|g" app/src/main/res/values/colors.xml || true
           fi
 
           # 5. Handle ReTrace Mapping (Minification)
-          if [ "${{ github.event.client_payload.generate_retrace_mapping }}" == "true" ]; then
+          if [ "${{ github.event.client_payload.settings.generate_retrace_mapping }}" == "true" ]; then
              echo "Enabling R8 Minification and Resource Shrinking..."
              sed -i "s|isMinifyEnabled = false|isMinifyEnabled = true|g" app/build.gradle.kts
              sed -i "s|isShrinkResources = false|isShrinkResources = true|g" app/build.gradle.kts
           fi
 
           # 6. Inject Permissions for Downloads
-          if [ "${{ github.event.client_payload.allow_downloads }}" == "true" ]; then
+          if [ "${{ github.event.client_payload.settings.allow_downloads }}" == "true" ]; then
              echo "Injecting Download Permissions..."
              MANIFEST=$(find app/src/main -name "AndroidManifest.xml")
              # Insert permission before application tag
@@ -62,6 +62,21 @@ jobs:
         run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > $GITHUB_WORKSPACE/release-key.jks
 
       - name: Build Signed AAB and APK
+        run: |
+          ./gradlew bundleRelease assembleDebug \
+            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.client_payload.general.name }}-v${{ github.event.client_payload.general.version_name }}
+          path: |
+            app/build/outputs/bundle/release/app-release.aab
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/mapping/release/mapping.txt
         run: |
           ./gradlew bundleRelease assembleDebug \
             -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
