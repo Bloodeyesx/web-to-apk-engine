@@ -1,8 +1,8 @@
-name: Build APK from Firebase
+name: Build Release AAB and APK
 on:
   repository_dispatch:
     types: [build_apk]
-    workflow_dispatch:      # <--- ADD THIS
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,22 +17,43 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # THIS IS THE CRITICAL FIX: FORCING VERSION 8.5
+      # 1. Force Gradle 8.5 to avoid the "Mutation" error
       - name: Repair Gradle Wrapper
         run: gradle wrapper --gradle-version 8.5 --distribution-type bin
+
+      # 2. Inject Website URL and App Name into the code
       - name: Inject Website Data
         run: |
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
           find app/src/main/java -name "MainActivity.kt" -exec sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" {} +
 
+      # 3. Reconstruct the Keystore from your GitHub Secret
+      - name: Decode Keystore
+        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > app/release-key.jks
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
+      # 4. Build BOTH the APK (for testing) and AAB (for Play Store)
+      # This command also signs the app using the secrets you saved
+      - name: Build and Sign Release App
+        run: |
+          ./gradlew bundleRelease assembleDebug \
+            -Pandroid.injected.signing.store.file=release-key.jks \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
 
-      - name: Upload APK
+      # 5. Upload the AAB file (Upload this to Google Play Console)
+      - name: Upload Release AAB
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.client_payload.name }}-v1.0
+          name: ${{ github.event.client_payload.name }}-PlayStore-Bundle
+          path: app/build/outputs/bundle/release/app-release.aab
+
+      # 6. Upload the APK file (Install this on your phone for testing)
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.client_payload.name }}-Test-APK
           path: app/build/outputs/apk/debug/app-debug.apk
