@@ -7,36 +7,32 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
 
-      # 1. Force Gradle 8.5 to maintain compatibility with Android Gradle Plugin 8.2.2
       - name: Repair Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.5 --distribution-type bin
+        run: gradle wrapper --gradle-version 8.5
 
-      # 2. Inject Website URL and App Name into the project files
-      - name: Inject Website Data
+      - name: Inject Website Data & Versioning
         run: |
+          # 1. Update URL & App Name
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
           find app/src/main/java -name "MainActivity.kt" -exec sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" {} +
+          
+          # 2. Update Package ID, Version Code, and Version Name in build.gradle.kts
+          sed -i "s|namespace = \".*\"|namespace = \"${{ github.event.client_payload.package_id }}\"|g" app/build.gradle.kts
+          sed -i "s|applicationId = \".*\"|applicationId = \"${{ github.event.client_payload.package_id }}\"|g" app/build.gradle.kts
+          sed -i "s|versionCode = .*|versionCode = ${{ github.event.client_payload.version_code }}|g" app/build.gradle.kts
+          sed -i "s|versionName = \".*\"|versionName = \"${{ github.event.client_payload.version_name }}\"|g" app/build.gradle.kts
 
-      # 3. Reconstruct the Keystore file in the ROOT workspace folder
       - name: Decode Keystore
-        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > $GITHUB_WORKSPACE/release-key.jks
+        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > release-key.jks
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      # 4. Build both the AAB (for Play Store) and APK (for testing)
-      # Uses the $GITHUB_WORKSPACE path to ensure the key is found
-      - name: Build and Sign Release App
+      - name: Build and Sign
         run: |
           ./gradlew bundleRelease assembleDebug \
             -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
@@ -44,16 +40,10 @@ jobs:
             -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
             -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
 
-      # 5. Upload the signed .aab file (For Google Play Console)
-      - name: Upload Release AAB
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.client_payload.name }}-Release-Bundle
-          path: app/build/outputs/bundle/release/app-release.aab
-
-      # 6. Upload the debug .apk file (For immediate testing on your phone)
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.client_payload.name }}-Test-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ${{ github.event.client_payload.name }}-v${{ github.event.client_payload.version_name }}
+          path: |
+            app/build/outputs/bundle/release/app-release.aab
+            app/build/outputs/apk/debug/app-debug.apk
