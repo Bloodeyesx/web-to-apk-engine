@@ -20,7 +20,6 @@ jobs:
       # THIS IS THE CRITICAL FIX: FORCING VERSION 8.5
       - name: Repair Gradle Wrapper
         run: gradle wrapper --gradle-version 8.5 --distribution-type bin
-
       - name: Inject Website Data
         run: |
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
