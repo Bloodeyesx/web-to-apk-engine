@@ -1,4 +1,4 @@
-name: Build Release AAB and APK
+name: Automated Release Factory
 on:
   repository_dispatch:
     types: [build_apk]
@@ -13,26 +13,34 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle
 
       - name: Repair Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.5
+        run: gradle wrapper --gradle-version 8.5 --distribution-type bin
 
-      - name: Inject Website Data & Versioning
+      - name: DYNAMIC INJECTION (The Secret Sauce)
         run: |
-          # 1. Update URL & App Name
+          # 1. Update App Name
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${{ github.event.client_payload.name }}</string>|g" app/src/main/res/values/strings.xml
-          find app/src/main/java -name "MainActivity.kt" -exec sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" {} +
           
-          # 2. Update Package ID, Version Code, and Version Name in build.gradle.kts
+          # 2. Find and Sync MainActivity.kt
+          # This finds the file no matter what folder it's in and updates the package and URL
+          KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
+          sed -i "s|package .*|package ${{ github.event.client_payload.package_id }}|g" $KOTLIN_PATH
+          sed -i "s|PLACEHOLDER_URL|${{ github.event.client_payload.url }}|g" $KOTLIN_PATH
+
+          # 3. Update build.gradle.kts (Target API 35 + Dynamic Package ID)
           sed -i "s|namespace = \".*\"|namespace = \"${{ github.event.client_payload.package_id }}\"|g" app/build.gradle.kts
           sed -i "s|applicationId = \".*\"|applicationId = \"${{ github.event.client_payload.package_id }}\"|g" app/build.gradle.kts
           sed -i "s|versionCode = .*|versionCode = ${{ github.event.client_payload.version_code }}|g" app/build.gradle.kts
           sed -i "s|versionName = \".*\"|versionName = \"${{ github.event.client_payload.version_name }}\"|g" app/build.gradle.kts
+          sed -i "s|compileSdk = .*|compileSdk = 35|g" app/build.gradle.kts
+          sed -i "s|targetSdk = .*|targetSdk = 35|g" app/build.gradle.kts
 
       - name: Decode Keystore
-        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > release-key.jks
+        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > $GITHUB_WORKSPACE/release-key.jks
 
-      - name: Build and Sign
+      - name: Build Signed AAB and APK
         run: |
           ./gradlew bundleRelease assembleDebug \
             -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
