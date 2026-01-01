@@ -18,10 +18,10 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
-        // The GitHub Action will replace this placeholder
+        // The GitHub Action replaces this placeholder
         val siteUrl = "PLACEHOLDER_URL"
 
-        // Webview Settings
+        // Professional WebView Settings
         val settings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -29,7 +29,7 @@ class MainActivity : AppCompatActivity() {
         settings.loadWithOverviewMode = true
         settings.useWideViewPort = true
 
-        // Ensure links stay inside the app
+        // Force links to stay inside the app
         webView.webViewClient = WebViewClient()
 
         // Load the URL
@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (webView.canGoBack()) {
+        if (this::webView.isInitialized && webView.canGoBack()) {
             webView.goBack()
         } else {
             @Suppress("DEPRECATION")
