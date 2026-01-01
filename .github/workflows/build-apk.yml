@@ -2,7 +2,7 @@ name: Build APK from Firebase
 on:
   repository_dispatch:
     types: [build_apk]
-
+    workflow_dispatch:      # <--- ADD THIS
 jobs:
   build:
     runs-on: ubuntu-latest
