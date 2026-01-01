@@ -19,21 +19,30 @@ jobs:
         run: gradle wrapper --gradle-version 8.5 --distribution-type bin
 
       - name: DYNAMIC INJECTION (The Secret Sauce)
+        env:
+          # Load payload into environment variables for safe handling
+          APP_NAME: ${{ github.event.client_payload.general.name }}
+          PACKAGE_ID: ${{ github.event.client_payload.general.package_id }}
+          URL: ${{ github.event.client_payload.general.url }}
+          VERSION_CODE: ${{ github.event.client_payload.general.version_code }}
+          VERSION_NAME: ${{ github.event.client_payload.general.version_name }}
+          THEME_COLOR: ${{ github.event.client_payload.design.theme_color }}
+          GEN_MAPPING: ${{ github.event.client_payload.settings.generate_retrace_mapping }}
+          ALLOW_DOWNLOADS: ${{ github.event.client_payload.settings.allow_downloads }}
         run: |
-          # Define variables from payload with safe defaults
-          APP_NAME="${{ github.event.client_payload.general.name }}"
-          PACKAGE_ID="${{ github.event.client_payload.general.package_id }}"
-          URL="${{ github.event.client_payload.general.url }}"
-          VERSION_CODE="${{ github.event.client_payload.general.version_code }}"
-          VERSION_NAME="${{ github.event.client_payload.general.version_name }}"
-
-          # Apply defaults if empty to prevent build breakage
+          # Apply defaults if empty
           if [ -z "$APP_NAME" ]; then APP_NAME="WebApp"; fi
           if [ -z "$PACKAGE_ID" ]; then PACKAGE_ID="com.example.webapp"; fi
           if [ -z "$VERSION_CODE" ]; then VERSION_CODE=1; fi
           if [ -z "$VERSION_NAME" ]; then VERSION_NAME="1.0.0"; fi
+          
+          echo "Configuration:"
+          echo "Name: $APP_NAME"
+          echo "Package: $PACKAGE_ID"
+          echo "Version: $VERSION_NAME ($VERSION_CODE)"
 
           # 1. Update App Name
+          # Use | as delimiter to avoid issues with slashes in URLs/Names
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" app/src/main/res/values/strings.xml
           
           # 2. Find and Sync MainActivity.kt
@@ -50,21 +59,21 @@ jobs:
           sed -i "s|targetSdk = .*|targetSdk = 35|g" app/build.gradle.kts
 
           # 4. Inject Theme Color (Best Effort)
-          if [ ! -z "${{ github.event.client_payload.design.theme_color }}" ]; then
-             echo "Injecting Theme Color: ${{ github.event.client_payload.design.theme_color }}"
-             sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">${{ github.event.client_payload.design.theme_color }}</color>|g" app/src/main/res/values/colors.xml || true
-             sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">${{ github.event.client_payload.design.theme_color }}</color>|g" app/src/main/res/values/colors.xml || true
+          if [ ! -z "$THEME_COLOR" ]; then
+             echo "Injecting Theme Color: $THEME_COLOR"
+             sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">$THEME_COLOR</color>|g" app/src/main/res/values/colors.xml || true
+             sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">$THEME_COLOR</color>|g" app/src/main/res/values/colors.xml || true
           fi
 
           # 5. Handle ReTrace Mapping (Minification)
-          if [ "${{ github.event.client_payload.settings.generate_retrace_mapping }}" == "true" ]; then
+          if [ "$GEN_MAPPING" == "true" ]; then
              echo "Enabling R8 Minification and Resource Shrinking..."
              sed -i "s|isMinifyEnabled = false|isMinifyEnabled = true|g" app/build.gradle.kts
              sed -i "s|isShrinkResources = false|isShrinkResources = true|g" app/build.gradle.kts
           fi
 
           # 6. Inject Permissions for Downloads
-          if [ "${{ github.event.client_payload.settings.allow_downloads }}" == "true" ]; then
+          if [ "$ALLOW_DOWNLOADS" == "true" ]; then
              echo "Injecting Download Permissions..."
              MANIFEST=$(find app/src/main -name "AndroidManifest.xml")
              # Insert permission before application tag
@@ -88,52 +97,5 @@ jobs:
           name: ${{ github.event.client_payload.general.name }}-v${{ github.event.client_payload.general.version_name }}
           path: |
             app/build/outputs/bundle/release/app-release.aab
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/mapping/release/mapping.txt
-        run: |
-          ./gradlew bundleRelease assembleDebug \
-            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
-            -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
-            -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
-            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.client_payload.general.name }}-v${{ github.event.client_payload.general.version_name }}
-          path: |
-            app/build/outputs/bundle/release/app-release.aab
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/mapping/release/mapping.txt
-        run: |
-          ./gradlew bundleRelease assembleDebug \
-            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
-            -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
-            -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
-            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.client_payload.general.name }}-v${{ github.event.client_payload.general.version_name }}
-          path: |
-            app/build/outputs/bundle/release/app-release.aab
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/mapping/release/mapping.txt
-        run: |
-          ./gradlew bundleRelease assembleDebug \
-            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
-            -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
-            -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
-            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.client_payload.name }}-v${{ github.event.client_payload.version_name }}
-          path: |
-            app/build/outputs/bundle/release/app-release.aab
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/mapping/release/mapping.txt
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/mapping/release/mapping.txt
