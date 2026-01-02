@@ -29,42 +29,33 @@ jobs:
           PAYLOAD_COLOR: ${{ github.event.client_payload.design.theme_color }}
           PAYLOAD_MAPPING: ${{ github.event.client_payload.settings.generate_retrace_mapping }}
           PAYLOAD_DOWNLOADS: ${{ github.event.client_payload.settings.allow_downloads }}
-          PAYLOAD_ICON: ${{ github.event.client_payload.design.icon_url }}
-          PAYLOAD_NAV: ${{ github.event.client_payload.design.navigation_mode }}
-          PAYLOAD_ORIENT: ${{ github.event.client_payload.design.screen_orientation }}
-          PAYLOAD_AD_ID: ${{ github.event.client_payload.settings.include_ad_id_permission }}
           
           # Permission Flags
           PAYLOAD_PERM_CAMERA: ${{ github.event.client_payload.settings.permissions.camera }}
           PAYLOAD_PERM_MIC: ${{ github.event.client_payload.settings.permissions.microphone }}
           PAYLOAD_PERM_LOC: ${{ github.event.client_payload.settings.permissions.location }}
         run: |
-          # Helper to safely resolve variables with defaults
+          # 1. SETUP & VARIABLE RESOLUTION
           resolve_var() {
-            local val=$(echo "$1" | xargs) # Trim whitespace
+            local val=$(echo "$1" | xargs)
             local default="$2"
-            if [ -z "$val" ] || [ "$val" == "null" ]; then
-              echo "$default"
-            else
-              echo "$val"
-            fi
+            if [ -z "$val" ] || [ "$val" == "null" ]; then echo "$default"; else echo "$val"; fi
           }
 
-          # Resolve variables
           APP_NAME=$(resolve_var "$PAYLOAD_NAME" "WebApp")
           PACKAGE_ID=$(resolve_var "$PAYLOAD_PACKAGE" "com.example.webapp")
           VERSION_CODE=$(resolve_var "$PAYLOAD_V_CODE" "1")
           VERSION_NAME=$(resolve_var "$PAYLOAD_V_NAME" "1.0.0")
           THEME_COLOR=$(resolve_var "$PAYLOAD_COLOR" "#000000")
           GEN_MAPPING=$(resolve_var "$PAYLOAD_MAPPING" "false")
-          ALLOW_DOWNLOADS=$(resolve_var "$PAYLOAD_DOWNLOADS" "false")
           
-          # Permission vars
-          PERM_CAMERA=$(resolve_var "$PAYLOAD_PERM_CAMERA" "false")
-          PERM_MIC=$(resolve_var "$PAYLOAD_PERM_MIC" "false")
-          PERM_LOC=$(resolve_var "$PAYLOAD_PERM_LOC" "false")
+          # Export these immediately for Python later
+          export ALLOW_DOWNLOADS=$(resolve_var "$PAYLOAD_DOWNLOADS" "false")
+          export PERM_CAMERA=$(resolve_var "$PAYLOAD_PERM_CAMERA" "false")
+          export PERM_MIC=$(resolve_var "$PAYLOAD_PERM_MIC" "false")
+          export PERM_LOC=$(resolve_var "$PAYLOAD_PERM_LOC" "false")
 
-          # Handle Source (URL or ZIP)
+          # Handle Source
           if [ ! -z "$PAYLOAD_ZIP" ] && [ "$PAYLOAD_ZIP" != "null" ]; then
              echo "Detected Embedded Zip Payload. Processing..."
              echo "$PAYLOAD_ZIP" | base64 --decode > temp_dist.zip
@@ -76,17 +67,16 @@ jobs:
              URL=$(resolve_var "$PAYLOAD_URL" "https://example.com")
           fi
 
-          # 1. Update App Name
+          # 2. INJECT STRINGS & PACKAGE
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" app/src/main/res/values/strings.xml
           
-          # 2. Sync MainActivity.kt
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
           if [ -f "$KOTLIN_PATH" ]; then
               sed -i "s|package .*|package $PACKAGE_ID|g" $KOTLIN_PATH
               sed -i "s|PLACEHOLDER_URL|$URL|g" $KOTLIN_PATH
           fi
 
-          # 3. Robust SDK Downgrade
+          # 3. BUILD GRADLE CONFIG
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
           GRADLE_FILE="app/build.gradle.kts"
           if [ -f "$GRADLE_FILE" ]; then
@@ -94,12 +84,12 @@ jobs:
               sed -i "s|applicationId\s*=\s*\".*\"|applicationId = \"$PACKAGE_ID\"|g" $GRADLE_FILE
               sed -i "s|versionCode\s*=\s*[0-9]*|versionCode = $VERSION_CODE|g" $GRADLE_FILE
               sed -i "s|versionName\s*=\s*\".*\"|versionName = \"$VERSION_NAME\"|g" $GRADLE_FILE
-              sed -i -E "s|compileSdk\s*[=( ]*[0-9]+.*|compileSdk = 34|g" $GRADLE_FILE
-              sed -i -E "s|targetSdk\s*[=( ]*[0-9]+.*|targetSdk = 34|g" $GRADLE_FILE
+              # Use simplified regex to avoid YAML parser issues
+              sed -i -E "s|compileSdk.*|compileSdk = 34|g" $GRADLE_FILE
+              sed -i -E "s|targetSdk.*|targetSdk = 34|g" $GRADLE_FILE
           fi
 
-          # 4. Inject Permissions & Attributes using Python
-          export ALLOW_DOWNLOADS PERM_CAMERA PERM_MIC PERM_LOC
+          # 4. PYTHON MANIFEST INJECTION
           cat <<'EOF' > update_manifest.py
           import os, sys, re
 
@@ -113,7 +103,6 @@ jobs:
               with open(manifest_path, 'r', encoding='utf-8') as f:
                   content = f.read()
 
-              # Build Permissions
               new_perms = []
               needed = ['android.permission.INTERNET']
               if allow_downloads: 
@@ -126,7 +115,6 @@ jobs:
                   if p not in content:
                       new_perms.append(f'    <uses-permission android:name="{p}" />')
 
-              # Inject into <application> tag safely
               def update_app_tag(match):
                   tag = match.group(0)
                   if 'android:usesCleartextTraffic' not in tag:
@@ -142,11 +130,12 @@ jobs:
               with open(manifest_path, 'w', encoding='utf-8') as f:
                   f.write(content)
           except Exception as e:
+              print(e)
               sys.exit(1)
           EOF
           python3 update_manifest.py
           
-          # 5. Inject COMPREHENSIVE Download & Scheme Listener
+          # 5. KOTLIN DOWNLOAD LISTENER INJECTION
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
              LINE_NUM=$(grep -n "loadUrl" $KOTLIN_PATH | cut -d: -f1 | head -n 1)
              WEBVIEW_VAR=$(grep "loadUrl" $KOTLIN_PATH | head -n 1 | awk -F. '{print $1}' | xargs)
@@ -168,7 +157,7 @@ jobs:
                     (getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
                     android.widget.Toast.makeText(applicationContext, "Download started...", android.widget.Toast.LENGTH_SHORT).show()
                 } else if (url.startsWith("data:")) {
-                    // Manual Base64 Handling (Fixes "Cannot open file type")
+                    // Manual Base64 Handling
                     val base64Data = url.substring(url.indexOf(",") + 1)
                     val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
                     val ext = if (mimetype.contains("/")) mimetype.split("/")[1] else "bin"
@@ -177,11 +166,10 @@ jobs:
                     val file = java.io.File(path, fileName)
                     java.io.FileOutputStream(file).use { it.write(decodedBytes) }
                     android.media.MediaScannerConnection.scanFile(applicationContext, arrayOf(file.absolutePath), null, null)
-                    android.widget.Toast.makeText(applicationContext, "Saved to Downloads: \$fileName", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(applicationContext, "Saved to Downloads", android.widget.Toast.LENGTH_LONG).show()
                 } else if (url.startsWith("blob:")) {
-                    android.widget.Toast.makeText(applicationContext, "Standard 'blob:' downloads require a direct URL. Long-press may work.", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(applicationContext, "Blob URLs require direct links.", android.widget.Toast.LENGTH_LONG).show()
                 } else {
-                    // Handle external intents (WhatsApp, Maps, etc)
                     val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
                     startActivity(intent)
                 }
