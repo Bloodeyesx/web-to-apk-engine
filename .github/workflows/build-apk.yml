@@ -120,7 +120,7 @@ jobs:
             "packageId": "$PACKAGE_ID",
             "versionCode": $VERSION_CODE,
             "versionName": "$VERSION_NAME",
-            "targetSdk": 35,
+            "targetSdk": 34,
             "url": "$TARGET_URL",
             "inputMode": "$INPUT_MODE",
             "iconUrl": "$ICON_URL",
@@ -158,8 +158,8 @@ jobs:
               sed -i "s|applicationId\s*=\s*\".*\"|applicationId = \"$PACKAGE_ID\"|g" $GRADLE_FILE
               sed -i "s|versionCode\s*=\s*[0-9]*|versionCode = $VERSION_CODE|g" $GRADLE_FILE
               sed -i "s|versionName\s*=\s*\".*\"|versionName = \"$VERSION_NAME\"|g" $GRADLE_FILE
-              sed -i "s|compileSdk\s*=\s*[0-9]*|compileSdk = 35|g" $GRADLE_FILE
-              sed -i "s|targetSdk\s*=\s*[0-9]*|targetSdk = 35|g" $GRADLE_FILE
+              sed -i "s|compileSdk\s*=\s*[0-9]*|compileSdk = 34|g" $GRADLE_FILE
+              sed -i "s|targetSdk\s*=\s*[0-9]*|targetSdk = 34|g" $GRADLE_FILE
               
               if [ "$GEN_MAPPING" == "true" ]; then
                  echo "Enabling R8 Minification..."
@@ -184,11 +184,12 @@ jobs:
               echo "Injecting Permissions..."
               
               # Function to inject permission if missing
+              # Uses space instead of newline to prevent XML corruption on some sed versions
               inject_perm() {
                   local PERM=$1
                   if ! grep -q "$PERM" "$MANIFEST"; then
-                       # Insert before <application tag
-                       sed -i "s|<application|<uses-permission android:name=\"android.permission.$PERM\" />\n    <application|g" $MANIFEST
+                       # Insert before <application tag on the same line
+                       sed -i "s|<application|<uses-permission android:name=\"android.permission.$PERM\" /> <application|" $MANIFEST
                   fi
               }
               
@@ -200,10 +201,10 @@ jobs:
                  inject_perm "READ_EXTERNAL_STORAGE"
                  inject_perm "POST_NOTIFICATIONS"
                  # Enable legacy storage request AND cleartext traffic for http downloads
-                 sed -i 's|<application|<application android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true"|g' $MANIFEST
+                 sed -i 's|<application|<application android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true"|' $MANIFEST
               else
                  # Just enable cleartext traffic for standard webview usage
-                 sed -i 's|<application|<application android:usesCleartextTraffic="true"|g' $MANIFEST
+                 sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $MANIFEST
               fi
               
               if [ "$PERM_CAMERA" == "true" ]; then inject_perm "CAMERA"; fi
