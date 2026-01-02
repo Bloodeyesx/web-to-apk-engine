@@ -120,7 +120,7 @@ jobs:
             "packageId": "$PACKAGE_ID",
             "versionCode": $VERSION_CODE,
             "versionName": "$VERSION_NAME",
-            "targetSdk": 34,
+            "targetSdk": 35,
             "url": "$TARGET_URL",
             "inputMode": "$INPUT_MODE",
             "iconUrl": "$ICON_URL",
@@ -138,7 +138,10 @@ jobs:
           }
           EOF
 
-          # 1. Update MainActivity.kt (Package & URL)
+          # 1. Update App Name
+          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" app/src/main/res/values/strings.xml
+          
+          # 2. Find and Sync MainActivity.kt
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
           if [ -f "$KOTLIN_PATH" ]; then
               sed -i "s|package .*|package $PACKAGE_ID|g" $KOTLIN_PATH
@@ -148,7 +151,7 @@ jobs:
               echo "Warning: MainActivity.kt not found"
           fi
 
-          # 2. Update build.gradle.kts and Fix Warning
+          # 3. Update build.gradle.kts
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
           
           GRADLE_FILE="app/build.gradle.kts"
@@ -157,10 +160,8 @@ jobs:
               sed -i "s|applicationId\s*=\s*\".*\"|applicationId = \"$PACKAGE_ID\"|g" $GRADLE_FILE
               sed -i "s|versionCode\s*=\s*[0-9]*|versionCode = $VERSION_CODE|g" $GRADLE_FILE
               sed -i "s|versionName\s*=\s*\".*\"|versionName = \"$VERSION_NAME\"|g" $GRADLE_FILE
-              
-              # Force downgrade to 34 to match AGP 8.2.2 capabilities
-              sed -i "s|compileSdk.*|compileSdk = 34|g" $GRADLE_FILE
-              sed -i "s|targetSdk.*|targetSdk = 34|g" $GRADLE_FILE
+              sed -i "s|compileSdk\s*=\s*[0-9]*|compileSdk = 35|g" $GRADLE_FILE
+              sed -i "s|targetSdk\s*=\s*[0-9]*|targetSdk = 35|g" $GRADLE_FILE
               
               if [ "$GEN_MAPPING" == "true" ]; then
                  echo "Enabling R8 Minification..."
@@ -172,14 +173,14 @@ jobs:
               exit 1
           fi
 
-          # 3. Inject Theme Color
+          # 4. Inject Theme Color
           COLORS_FILE="app/src/main/res/values/colors.xml"
           if [ -f "$COLORS_FILE" ] && [ ! -z "$THEME_COLOR" ]; then
              sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">$THEME_COLOR</color>|g" $COLORS_FILE || true
              sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">$THEME_COLOR</color>|g" $COLORS_FILE || true
           fi
 
-          # 4. Inject Permissions & Update Strings using Python (Safer for XML)
+          # 5. Inject Permissions & Update Strings using Python (Safer for XML)
           export ALLOW_DOWNLOADS
           export PERM_CAMERA
           export PERM_MIC
@@ -293,7 +294,7 @@ jobs:
           # Execute the python script
           python3 update_resources.py
           
-          # 5. Inject Download Listener into Kotlin
+          # 6. Inject Download Listener into Kotlin
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
              echo "Injecting Download Listener Code..."
              
@@ -303,12 +304,16 @@ jobs:
              WEBVIEW_VAR=$(echo $LINE_CONTENT | awk -F. '{print $1}' | xargs)
              
              if [ ! -z "$WEBVIEW_VAR" ]; then
+                 # Create code block using printf to avoid heredoc indentation issues.
+                 # Includes Try-Catch to prevent crashes on unsupported URLs (e.g. blob:)
+                 # Falls back to external Intent for non-HTTP schemes.
                  printf "\n        // Download Support Injected\n        %s.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->\n             if (url.startsWith(\"http\") || url.startsWith(\"https\")) {\n                 try {\n                     val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))\n                     request.setMimeType(mimetype)\n                     request.addRequestHeader(\"cookie\", android.webkit.CookieManager.getInstance().getCookie(url))\n                     request.addRequestHeader(\"User-Agent\", userAgent)\n                     request.setDescription(\"Downloading file...\")\n                     request.setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n                     request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)\n                     request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n                     val dm = getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager\n                     dm.enqueue(request)\n                     android.widget.Toast.makeText(applicationContext, \"Downloading...\", android.widget.Toast.LENGTH_SHORT).show()\n                 } catch (e: Exception) {\n                     android.widget.Toast.makeText(applicationContext, \"Download Error: \" + e.message, android.widget.Toast.LENGTH_LONG).show()\n                 }\n             } else {\n                 try {\n                     val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)\n                     intent.setData(android.net.Uri.parse(url))\n                     startActivity(intent)\n                 } catch (e: Exception) {\n                     android.widget.Toast.makeText(applicationContext, \"Cannot open file type\", android.widget.Toast.LENGTH_SHORT).show()\n                 }\n             }\n        }\n" "$WEBVIEW_VAR" > download_logic.kt
 
                  # Insert MARKER before loadUrl
                  sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
                  
                  # Replace MARKER_DL with file content
+                 # Use perl for reliable multiline replacement
                  perl -i -pe 'BEGIN{local $/; open(F,"download_logic.kt"); $c=<F>;} s/MARKER_DL/$c/' $KOTLIN_PATH
              fi
           fi
