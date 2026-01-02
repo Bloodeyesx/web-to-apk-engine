@@ -33,6 +33,11 @@ jobs:
           PAYLOAD_NAV: ${{ github.event.client_payload.design.navigation_mode }}
           PAYLOAD_ORIENT: ${{ github.event.client_payload.design.screen_orientation }}
           PAYLOAD_AD_ID: ${{ github.event.client_payload.settings.include_ad_id_permission }}
+          
+          # Permission Flags
+          PAYLOAD_PERM_CAMERA: ${{ github.event.client_payload.settings.permissions.camera }}
+          PAYLOAD_PERM_MIC: ${{ github.event.client_payload.settings.permissions.microphone }}
+          PAYLOAD_PERM_LOC: ${{ github.event.client_payload.settings.permissions.location }}
         run: |
           # Helper to safely resolve variables with defaults
           resolve_var() {
@@ -59,6 +64,11 @@ jobs:
           NAV_MODE=$(resolve_var "$PAYLOAD_NAV" "bar")
           ORIENTATION=$(resolve_var "$PAYLOAD_ORIENT" "system")
           INCLUDE_AD_ID=$(resolve_var "$PAYLOAD_AD_ID" "true")
+          
+          # Permission vars
+          PERM_CAMERA=$(resolve_var "$PAYLOAD_PERM_CAMERA" "false")
+          PERM_MIC=$(resolve_var "$PAYLOAD_PERM_MIC" "false")
+          PERM_LOC=$(resolve_var "$PAYLOAD_PERM_LOC" "false")
 
           # Handle Source (URL or ZIP)
           if [ ! -z "$PAYLOAD_ZIP" ] && [ "$PAYLOAD_ZIP" != "null" ]; then
@@ -95,6 +105,8 @@ jobs:
           echo "URL: $URL"
           echo "Version: $VERSION_NAME ($VERSION_CODE)"
           echo "Color: $THEME_COLOR"
+          echo "Permissions: Cam=$PERM_CAMERA, Mic=$PERM_MIC, Loc=$PERM_LOC"
+          echo "Downloads: $ALLOW_DOWNLOADS"
           echo "----------------------------------------"
 
           # Export for next steps
@@ -117,7 +129,12 @@ jobs:
             "orientation": "$ORIENTATION",
             "includeAdId": $INCLUDE_AD_ID,
             "generateReTraceMapping": $GEN_MAPPING,
-            "allowDownloads": $ALLOW_DOWNLOADS
+            "allowDownloads": $ALLOW_DOWNLOADS,
+            "permissions": {
+                "camera": $PERM_CAMERA,
+                "microphone": $PERM_MIC,
+                "location": $PERM_LOC
+            }
           }
           EOF
 
@@ -162,15 +179,70 @@ jobs:
           fi
 
           # 5. Inject Permissions & Download Support
-          if [ "$ALLOW_DOWNLOADS" == "true" ]; then
-             MANIFEST=$(find app/src/main -name "AndroidManifest.xml")
-             if [ -f "$MANIFEST" ]; then
-                 echo "Injecting permissions for Downloads..."
-                 PERMS='<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" /><uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" /><uses-permission android:name="android.permission.POST_NOTIFICATIONS" /><application'
-                 if ! grep -q "WRITE_EXTERNAL_STORAGE" "$MANIFEST"; then
-                     sed -i "s|<application|$PERMS|g" $MANIFEST
-                 fi
+          MANIFEST=$(find app/src/main -name "AndroidManifest.xml")
+          if [ -f "$MANIFEST" ]; then
+              echo "Injecting Permissions..."
+              
+              # Function to inject permission if missing
+              inject_perm() {
+                  local PERM=$1
+                  if ! grep -q "$PERM" "$MANIFEST"; then
+                       # Insert before <application tag
+                       sed -i "s|<application|<uses-permission android:name=\"android.permission.$PERM\" />\n    <application|g" $MANIFEST
+                  fi
+              }
+
+              if [ "$ALLOW_DOWNLOADS" == "true" ]; then
+                 inject_perm "WRITE_EXTERNAL_STORAGE"
+                 inject_perm "READ_EXTERNAL_STORAGE"
+                 inject_perm "POST_NOTIFICATIONS"
+                 # Enable legacy storage request
                  sed -i 's|<application|<application android:requestLegacyExternalStorage="true"|g' $MANIFEST
+              fi
+              
+              if [ "$PERM_CAMERA" == "true" ]; then inject_perm "CAMERA"; fi
+              if [ "$PERM_MIC" == "true" ]; then inject_perm "RECORD_AUDIO"; fi
+              if [ "$PERM_LOC" == "true" ]; then 
+                  inject_perm "ACCESS_FINE_LOCATION"
+                  inject_perm "ACCESS_COARSE_LOCATION"
+              fi
+          fi
+          
+          # 6. Inject Download Listener into Kotlin
+          if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
+             echo "Injecting Download Listener Code..."
+             
+             # Detect variable name for WebView by looking for loadUrl
+             # Assumes syntax: myWebView.loadUrl(...)
+             LINE_NUM=$(grep -n "loadUrl" $KOTLIN_PATH | cut -d: -f1 | head -n 1)
+             LINE_CONTENT=$(sed "${LINE_NUM}q;d" $KOTLIN_PATH)
+             WEBVIEW_VAR=$(echo $LINE_CONTENT | awk -F. '{print $1}' | xargs)
+             
+             if [ ! -z "$WEBVIEW_VAR" ]; then
+                 # Create code block
+                 cat <<EOF_DL > download_logic.kt
+                 
+        // Download Support Injected
+        $WEBVIEW_VAR.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+            val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
+            request.setMimeType(mimetype)
+            request.addRequestHeader("cookie", android.webkit.CookieManager.getInstance().getCookie(url))
+            request.addRequestHeader("User-Agent", userAgent)
+            request.setDescription("Downloading file...")
+            request.setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))
+            request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))
+            val dm = getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+            dm.enqueue(request)
+            android.widget.Toast.makeText(applicationContext, "Downloading...", android.widget.Toast.LENGTH_SHORT).show()
+        }
+EOF_DL
+                 # Insert MARKER before loadUrl
+                 sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
+                 
+                 # Replace MARKER_DL with file content
+                 # Use perl for reliable multiline replacement
+                 perl -i -pe 'BEGIN{local $/; open(F,"download_logic.kt"); $c=<F>;} s/MARKER_DL/$c/' $KOTLIN_PATH
              fi
           fi
 
