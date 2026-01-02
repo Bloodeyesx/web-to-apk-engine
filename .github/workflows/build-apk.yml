@@ -59,12 +59,6 @@ jobs:
           GEN_MAPPING=$(resolve_var "$PAYLOAD_MAPPING" "false")
           ALLOW_DOWNLOADS=$(resolve_var "$PAYLOAD_DOWNLOADS" "false")
           
-          # Extra vars for config persistence
-          ICON_URL=$(resolve_var "$PAYLOAD_ICON" "")
-          NAV_MODE=$(resolve_var "$PAYLOAD_NAV" "bar")
-          ORIENTATION=$(resolve_var "$PAYLOAD_ORIENT" "system")
-          INCLUDE_AD_ID=$(resolve_var "$PAYLOAD_AD_ID" "true")
-          
           # Permission vars
           PERM_CAMERA=$(resolve_var "$PAYLOAD_PERM_CAMERA" "false")
           PERM_MIC=$(resolve_var "$PAYLOAD_PERM_MIC" "false")
@@ -73,243 +67,130 @@ jobs:
           # Handle Source (URL or ZIP)
           if [ ! -z "$PAYLOAD_ZIP" ] && [ "$PAYLOAD_ZIP" != "null" ]; then
              echo "Detected Embedded Zip Payload. Processing..."
-             
-             # Decode Base64 to zip file
              echo "$PAYLOAD_ZIP" | base64 --decode > temp_dist.zip
-             
-             # Create assets directory
              mkdir -p app/src/main/assets/www
-             
-             # Unzip into assets/www
              unzip -o temp_dist.zip -d app/src/main/assets/www
-             
-             # Set URL to local file path
              URL="file:///android_asset/www/index.html"
-             INPUT_MODE="zip"
-             TARGET_URL=""
-             echo "Source Mode: Local Zip (index.html)"
-             
-             # Clean up
              rm temp_dist.zip
           else
              URL=$(resolve_var "$PAYLOAD_URL" "https://example.com")
-             INPUT_MODE="url"
-             TARGET_URL="$URL"
-             echo "Source Mode: Remote URL"
           fi
 
-          echo "----------------------------------------"
-          echo "Build Configuration:"
-          echo "Name: $APP_NAME"
-          echo "Package: $PACKAGE_ID"
-          echo "URL: $URL"
-          echo "Version: $VERSION_NAME ($VERSION_CODE)"
-          echo "Color: $THEME_COLOR"
-          echo "Permissions: Cam=$PERM_CAMERA, Mic=$PERM_MIC, Loc=$PERM_LOC"
-          echo "Downloads: $ALLOW_DOWNLOADS"
-          echo "----------------------------------------"
-
-          # Export for next steps
-          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
-          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
-
-          # Generate config for restoration
-          cat <<EOF > build_config.json
-          {
-            "appName": "$APP_NAME",
-            "packageId": "$PACKAGE_ID",
-            "versionCode": $VERSION_CODE,
-            "versionName": "$VERSION_NAME",
-            "targetSdk": 35,
-            "url": "$TARGET_URL",
-            "inputMode": "$INPUT_MODE",
-            "iconUrl": "$ICON_URL",
-            "themeColor": "$THEME_COLOR",
-            "navMode": "$NAV_MODE",
-            "orientation": "$ORIENTATION",
-            "includeAdId": $INCLUDE_AD_ID,
-            "generateReTraceMapping": $GEN_MAPPING,
-            "allowDownloads": $ALLOW_DOWNLOADS,
-            "permissions": {
-                "camera": $PERM_CAMERA,
-                "microphone": $PERM_MIC,
-                "location": $PERM_LOC
-            }
-          }
-          EOF
-
-          # 1. Update MainActivity.kt (Package Name & URL)
+          # 1. Update App Name
+          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" app/src/main/res/values/strings.xml
+          
+          # 2. Sync MainActivity.kt
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
           if [ -f "$KOTLIN_PATH" ]; then
               sed -i "s|package .*|package $PACKAGE_ID|g" $KOTLIN_PATH
-              # Update URL Placeholder
               sed -i "s|PLACEHOLDER_URL|$URL|g" $KOTLIN_PATH
-          else
-              echo "Warning: MainActivity.kt not found"
           fi
 
-          # 2. Update build.gradle.kts (Versions & IDs)
+          # 3. Robust SDK Downgrade
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
-          
           GRADLE_FILE="app/build.gradle.kts"
           if [ -f "$GRADLE_FILE" ]; then
               sed -i "s|namespace\s*=\s*\".*\"|namespace = \"$PACKAGE_ID\"|g" $GRADLE_FILE
               sed -i "s|applicationId\s*=\s*\".*\"|applicationId = \"$PACKAGE_ID\"|g" $GRADLE_FILE
               sed -i "s|versionCode\s*=\s*[0-9]*|versionCode = $VERSION_CODE|g" $GRADLE_FILE
               sed -i "s|versionName\s*=\s*\".*\"|versionName = \"$VERSION_NAME\"|g" $GRADLE_FILE
-              sed -i "s|compileSdk\s*=\s*[0-9]*|compileSdk = 35|g" $GRADLE_FILE
-              sed -i "s|targetSdk\s*=\s*[0-9]*|targetSdk = 35|g" $GRADLE_FILE
-              
-              if [ "$GEN_MAPPING" == "true" ]; then
-                 echo "Enabling R8 Minification..."
-                 sed -i "s|isMinifyEnabled\s*=\s*false|isMinifyEnabled = true|g" $GRADLE_FILE
-                 sed -i "s|isShrinkResources\s*=\s*false|isShrinkResources = true|g" $GRADLE_FILE
-              fi
-          else
-              echo "Error: build.gradle.kts not found!"
-              exit 1
+              sed -i -E "s|compileSdk\s*[=( ]*[0-9]+.*|compileSdk = 34|g" $GRADLE_FILE
+              sed -i -E "s|targetSdk\s*[=( ]*[0-9]+.*|targetSdk = 34|g" $GRADLE_FILE
           fi
 
-          # 3. Inject Theme Color
-          COLORS_FILE="app/src/main/res/values/colors.xml"
-          if [ -f "$COLORS_FILE" ] && [ ! -z "$THEME_COLOR" ]; then
-             sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">$THEME_COLOR</color>|g" $COLORS_FILE || true
-             sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">$THEME_COLOR</color>|g" $COLORS_FILE || true
-          fi
-
-          # 4. Inject Permissions, Attributes & App Name using Python
-          # Using xml.etree.ElementTree for robust, error-free XML manipulation
-          export ALLOW_DOWNLOADS
-          export PERM_CAMERA
-          export PERM_MIC
-          export PERM_LOC
-          export APP_NAME
-          
-          cat <<'EOF' > update_resources.py
-          import os
-          import xml.etree.ElementTree as ET
-
-          # Define Namespace
-          android_ns = 'http://schemas.android.com/apk/res/android'
-          ET.register_namespace('android', android_ns)
+          # 4. Inject Permissions & Attributes using Python
+          export ALLOW_DOWNLOADS PERM_CAMERA PERM_MIC PERM_LOC
+          cat <<'EOF' > update_manifest.py
+          import os, sys, re
 
           manifest_path = 'app/src/main/AndroidManifest.xml'
-          strings_path = 'app/src/main/res/values/strings.xml'
-          
-          # Read flags
           allow_downloads = os.environ.get('ALLOW_DOWNLOADS') == 'true'
           perm_camera = os.environ.get('PERM_CAMERA') == 'true'
           perm_mic = os.environ.get('PERM_MIC') == 'true'
           perm_loc = os.environ.get('PERM_LOC') == 'true'
-          app_name = os.environ.get('APP_NAME', 'WebApp')
 
-          # --- Task A: Update Strings.xml ---
           try:
-              if os.path.exists(strings_path):
-                  # Pre-sanitize: Remove non-breaking spaces
-                  with open(strings_path, 'r', encoding='utf-8') as f:
-                      raw_s = f.read().replace('\u00A0', ' ')
-                  with open(strings_path, 'w', encoding='utf-8') as f:
-                      f.write(raw_s)
-
-                  tree = ET.parse(strings_path)
-                  root = tree.getroot()
-                  
-                  found = False
-                  for string in root.findall('string'):
-                      if string.get('name') == 'app_name':
-                          string.text = app_name
-                          found = True
-                          break
-                  
-                  if found:
-                      ET.indent(tree, space="    ", level=0)
-                      tree.write(strings_path, encoding='utf-8', xml_declaration=True)
-                      print("Strings.xml updated.")
-          except Exception as e:
-              print(f"Error strings: {e}")
-              exit(1)
-
-          # --- Task B: Update AndroidManifest.xml ---
-          try:
-              # Pre-sanitize: Remove non-breaking spaces
               with open(manifest_path, 'r', encoding='utf-8') as f:
-                  raw_m = f.read().replace('\u00A0', ' ')
+                  content = f.read()
+
+              # Build Permissions
+              new_perms = []
+              needed = ['android.permission.INTERNET']
+              if allow_downloads: 
+                  needed += ['android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.READ_EXTERNAL_STORAGE']
+              if perm_camera: needed.append('android.permission.CAMERA')
+              if perm_mic: needed.append('android.permission.RECORD_AUDIO')
+              if perm_loc: needed += ['android.permission.ACCESS_FINE_LOCATION', 'android.permission.ACCESS_COARSE_LOCATION']
+              
+              for p in needed:
+                  if p not in content:
+                      new_perms.append(f'    <uses-permission android:name="{p}" />')
+
+              # Inject into <application> tag safely
+              def update_app_tag(match):
+                  tag = match.group(0)
+                  if 'android:usesCleartextTraffic' not in tag:
+                      tag = tag.replace('<application', '<application android:usesCleartextTraffic="true"')
+                  if allow_downloads and 'android:requestLegacyExternalStorage' not in tag:
+                      tag = tag.replace('<application', '<application android:requestLegacyExternalStorage="true"')
+                  return tag
+
+              content = re.sub(r'<application[^>]*>', update_app_tag, content, count=1)
+              if new_perms:
+                  content = content.replace('<application', '\n'.join(new_perms) + '\n    <application')
+
               with open(manifest_path, 'w', encoding='utf-8') as f:
-                  f.write(raw_m)
-
-              tree = ET.parse(manifest_path)
-              root = tree.getroot()
-              
-              # Helper to add permission if not exists
-              def add_perm(name):
-                  full_name = f"android.permission.{name}"
-                  # Check existing
-                  for perm in root.findall('uses-permission'):
-                      if perm.get(f'{{{android_ns}}}name') == full_name:
-                          return
-                  # Add new
-                  elem = ET.SubElement(root, 'uses-permission')
-                  elem.set(f'{{{android_ns}}}name', full_name)
-
-              # Always Internet
-              add_perm("INTERNET")
-              
-              if allow_downloads:
-                  add_perm("WRITE_EXTERNAL_STORAGE")
-                  add_perm("READ_EXTERNAL_STORAGE")
-                  add_perm("POST_NOTIFICATIONS")
-              
-              if perm_camera: add_perm("CAMERA")
-              if perm_mic: add_perm("RECORD_AUDIO")
-              if perm_loc: 
-                  add_perm("ACCESS_FINE_LOCATION")
-                  add_perm("ACCESS_COARSE_LOCATION")
-
-              # Update Application Attributes
-              app = root.find('application')
-              if app is not None:
-                  # Set attributes (overwrites if exists, so no duplicates)
-                  app.set(f'{{{android_ns}}}usesCleartextTraffic', 'true')
-                  
-                  if allow_downloads:
-                      app.set(f'{{{android_ns}}}requestLegacyExternalStorage', 'true')
-
-              ET.indent(tree, space="    ", level=0)
-              tree.write(manifest_path, encoding='utf-8', xml_declaration=True)
-              print("Manifest updated successfully.")
-
+                  f.write(content)
           except Exception as e:
-              print(f"Error updating manifest: {e}")
-              exit(1)
+              sys.exit(1)
           EOF
-
-          # Execute the python script
-          python3 update_resources.py
+          python3 update_manifest.py
           
-          # Debug: Print manifest to verify XML structure in logs
-          echo "=== DEBUG: MANIFEST CHECK ==="
-          cat app/src/main/AndroidManifest.xml
-          echo "============================="
-
-          # 5. Inject Download Listener into Kotlin
+          # 5. Inject COMPREHENSIVE Download & Scheme Listener
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
-             echo "Injecting Download Listener Code..."
-             
-             # Detect variable name for WebView by looking for loadUrl
              LINE_NUM=$(grep -n "loadUrl" $KOTLIN_PATH | cut -d: -f1 | head -n 1)
-             LINE_CONTENT=$(sed "${LINE_NUM}q;d" $KOTLIN_PATH)
-             WEBVIEW_VAR=$(echo $LINE_CONTENT | awk -F. '{print $1}' | xargs)
+             WEBVIEW_VAR=$(grep "loadUrl" $KOTLIN_PATH | head -n 1 | awk -F. '{print $1}' | xargs)
              
              if [ ! -z "$WEBVIEW_VAR" ]; then
-                 # Create code block using printf to avoid heredoc indentation issues.
-                 printf "\n        // Download Support Injected\n        %s.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->\n             if (url.startsWith(\"http\") || url.startsWith(\"https\")) {\n                 try {\n                     val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))\n                     request.setMimeType(mimetype)\n                     request.addRequestHeader(\"cookie\", android.webkit.CookieManager.getInstance().getCookie(url))\n                     request.addRequestHeader(\"User-Agent\", userAgent)\n                     request.setDescription(\"Downloading file...\")\n                     request.setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n                     request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)\n                     request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n                     val dm = getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager\n                     dm.enqueue(request)\n                     android.widget.Toast.makeText(applicationContext, \"Downloading...\", android.widget.Toast.LENGTH_SHORT).show()\n                 } catch (e: Exception) {\n                     android.widget.Toast.makeText(applicationContext, \"Download Error: \" + e.message, android.widget.Toast.LENGTH_LONG).show()\n                 }\n             } else {\n                 try {\n                     val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)\n                     intent.setData(android.net.Uri.parse(url))\n                     startActivity(intent)\n                 } catch (e: Exception) {\n                     android.widget.Toast.makeText(applicationContext, \"Cannot open file type\", android.widget.Toast.LENGTH_SHORT).show()\n                 }\n             }\n        }\n" "$WEBVIEW_VAR" > download_logic.kt
-
-                 # Insert MARKER before loadUrl
+                 cat <<EOF > download_logic.kt
+        // Advanced Download & Scheme Support
+        $WEBVIEW_VAR.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+            try {
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
+                    val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
+                    request.setMimeType(mimetype)
+                    request.addRequestHeader("cookie", android.webkit.CookieManager.getInstance().getCookie(url))
+                    request.addRequestHeader("User-Agent", userAgent)
+                    request.setTitle(fileName)
+                    request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+                    (getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
+                    android.widget.Toast.makeText(applicationContext, "Download started...", android.widget.Toast.LENGTH_SHORT).show()
+                } else if (url.startsWith("data:")) {
+                    // Manual Base64 Handling (Fixes "Cannot open file type")
+                    val base64Data = url.substring(url.indexOf(",") + 1)
+                    val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                    val ext = if (mimetype.contains("/")) mimetype.split("/")[1] else "bin"
+                    val fileName = "download_" + System.currentTimeMillis() + "." + ext
+                    val path = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    val file = java.io.File(path, fileName)
+                    java.io.FileOutputStream(file).use { it.write(decodedBytes) }
+                    android.media.MediaScannerConnection.scanFile(applicationContext, arrayOf(file.absolutePath), null, null)
+                    android.widget.Toast.makeText(applicationContext, "Saved to Downloads: \$fileName", android.widget.Toast.LENGTH_LONG).show()
+                } else if (url.startsWith("blob:")) {
+                    android.widget.Toast.makeText(applicationContext, "Standard 'blob:' downloads require a direct URL. Long-press may work.", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    // Handle external intents (WhatsApp, Maps, etc)
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                    startActivity(intent)
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(applicationContext, "Link error: \${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+EOF
                  sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
-                 
-                 # Replace MARKER_DL with file content
-                 # Use perl for reliable multiline replacement
                  perl -i -pe 'BEGIN{local $/; open(F,"download_logic.kt"); $c=<F>;} s/MARKER_DL/$c/' $KOTLIN_PATH
              fi
           fi
@@ -329,14 +210,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME || 'App' }}-v${{ env.VERSION_NAME || '1.0' }}
-          if-no-files-found: warn
           path: |
             app/build/outputs/bundle/release/app-release.aab
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/mapping/release/mapping.txt
-            
-      - name: Upload Build Metadata
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-metadata
-          path: build_config.json
