@@ -49,7 +49,7 @@ jobs:
           THEME_COLOR=$(resolve_var "$PAYLOAD_COLOR" "#000000")
           GEN_MAPPING=$(resolve_var "$PAYLOAD_MAPPING" "false")
           
-          # Export these immediately for Python later
+          # Export for Python
           export ALLOW_DOWNLOADS=$(resolve_var "$PAYLOAD_DOWNLOADS" "false")
           export PERM_CAMERA=$(resolve_var "$PAYLOAD_PERM_CAMERA" "false")
           export PERM_MIC=$(resolve_var "$PAYLOAD_PERM_MIC" "false")
@@ -84,14 +84,20 @@ jobs:
               sed -i "s|applicationId\s*=\s*\".*\"|applicationId = \"$PACKAGE_ID\"|g" $GRADLE_FILE
               sed -i "s|versionCode\s*=\s*[0-9]*|versionCode = $VERSION_CODE|g" $GRADLE_FILE
               sed -i "s|versionName\s*=\s*\".*\"|versionName = \"$VERSION_NAME\"|g" $GRADLE_FILE
-              # Use simplified regex to avoid YAML parser issues
               sed -i -E "s|compileSdk.*|compileSdk = 34|g" $GRADLE_FILE
               sed -i -E "s|targetSdk.*|targetSdk = 34|g" $GRADLE_FILE
+              
+              if [ "$GEN_MAPPING" == "true" ]; then
+                 sed -i "s|isMinifyEnabled\s*=\s*false|isMinifyEnabled = true|g" $GRADLE_FILE
+                 sed -i "s|isShrinkResources\s*=\s*false|isShrinkResources = true|g" $GRADLE_FILE
+              fi
           fi
 
           # 4. PYTHON MANIFEST INJECTION
           cat <<'EOF' > update_manifest.py
-          import os, sys, re
+          import os
+          import sys
+          import re
 
           manifest_path = 'app/src/main/AndroidManifest.xml'
           allow_downloads = os.environ.get('ALLOW_DOWNLOADS') == 'true'
@@ -104,16 +110,25 @@ jobs:
                   content = f.read()
 
               new_perms = []
-              needed = ['android.permission.INTERNET']
-              if allow_downloads: 
-                  needed += ['android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.READ_EXTERNAL_STORAGE']
-              if perm_camera: needed.append('android.permission.CAMERA')
-              if perm_mic: needed.append('android.permission.RECORD_AUDIO')
-              if perm_loc: needed += ['android.permission.ACCESS_FINE_LOCATION', 'android.permission.ACCESS_COARSE_LOCATION']
+              # Base Permissions
+              if 'android.permission.INTERNET' not in content:
+                  new_perms.append('    <uses-permission android:name="android.permission.INTERNET" />')
               
-              for p in needed:
-                  if p not in content:
-                      new_perms.append(f'    <uses-permission android:name="{p}" />')
+              if allow_downloads: 
+                  if 'android.permission.WRITE_EXTERNAL_STORAGE' not in content:
+                      new_perms.append('    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />')
+                  if 'android.permission.READ_EXTERNAL_STORAGE' not in content:
+                      new_perms.append('    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />')
+
+              if perm_camera and 'android.permission.CAMERA' not in content:
+                  new_perms.append('    <uses-permission android:name="android.permission.CAMERA" />')
+              
+              if perm_mic and 'android.permission.RECORD_AUDIO' not in content:
+                  new_perms.append('    <uses-permission android:name="android.permission.RECORD_AUDIO" />')
+                  
+              if perm_loc and 'android.permission.ACCESS_FINE_LOCATION' not in content:
+                  new_perms.append('    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />')
+                  new_perms.append('    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />')
 
               def update_app_tag(match):
                   tag = match.group(0)
@@ -124,15 +139,19 @@ jobs:
                   return tag
 
               content = re.sub(r'<application[^>]*>', update_app_tag, content, count=1)
-              if new_perms:
-                  content = content.replace('<application', '\n'.join(new_perms) + '\n    <application')
+              
+              if len(new_perms) > 0:
+                  perm_string = '\n'.join(new_perms)
+                  content = content.replace('<application', perm_string + '\n    <application')
 
               with open(manifest_path, 'w', encoding='utf-8') as f:
                   f.write(content)
+                  
           except Exception as e:
               print(e)
               sys.exit(1)
           EOF
+          
           python3 update_manifest.py
           
           # 5. KOTLIN DOWNLOAD LISTENER INJECTION
@@ -177,7 +196,7 @@ jobs:
                 android.widget.Toast.makeText(applicationContext, "Link error: \${e.message}", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
-EOF
+          EOF
                  sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
                  perl -i -pe 'BEGIN{local $/; open(F,"download_logic.kt"); $c=<F>;} s/MARKER_DL/$c/' $KOTLIN_PATH
              fi
