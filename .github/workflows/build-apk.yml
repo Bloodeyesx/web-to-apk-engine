@@ -138,10 +138,7 @@ jobs:
           }
           EOF
 
-          # 1. Update App Name
-          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" app/src/main/res/values/strings.xml
-          
-          # 2. Find and Sync MainActivity.kt
+          # 1. Update MainActivity.kt
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
           if [ -f "$KOTLIN_PATH" ]; then
               sed -i "s|package .*|package $PACKAGE_ID|g" $KOTLIN_PATH
@@ -151,7 +148,7 @@ jobs:
               echo "Warning: MainActivity.kt not found"
           fi
 
-          # 3. Update build.gradle.kts
+          # 2. Update build.gradle.kts
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
           
           GRADLE_FILE="app/build.gradle.kts"
@@ -173,14 +170,14 @@ jobs:
               exit 1
           fi
 
-          # 4. Inject Theme Color
+          # 3. Inject Theme Color
           COLORS_FILE="app/src/main/res/values/colors.xml"
           if [ -f "$COLORS_FILE" ] && [ ! -z "$THEME_COLOR" ]; then
              sed -i "s|<color name=\"colorPrimary\">.*</color>|<color name=\"colorPrimary\">$THEME_COLOR</color>|g" $COLORS_FILE || true
              sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">$THEME_COLOR</color>|g" $COLORS_FILE || true
           fi
 
-          # 5. Inject Permissions & Update Strings using Python (Safer for XML)
+          # 4. Inject Permissions & Update Strings using Python (Safer for XML)
           export ALLOW_DOWNLOADS
           export PERM_CAMERA
           export PERM_MIC
@@ -269,12 +266,14 @@ jobs:
                   tag_content = match.group(0)
                   
                   # Add usesCleartextTraffic if not present
+                  # CRITICAL FIX: Add a trailing space to prevent attribute merging error (e.g. "true"android:label)
                   if 'android:usesCleartextTraffic' not in tag_content:
-                      tag_content = tag_content.replace('<application', '<application android:usesCleartextTraffic="true"')
+                      tag_content = tag_content.replace('<application', '<application android:usesCleartextTraffic="true" ')
                   
                   # Add legacy storage if needed and not present
+                  # CRITICAL FIX: Add a trailing space here too
                   if allow_downloads and 'android:requestLegacyExternalStorage' not in tag_content:
-                      tag_content = tag_content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
+                      tag_content = tag_content.replace('<application', '<application android:requestLegacyExternalStorage="true" ')
                       
                   return tag_content
 
@@ -294,7 +293,7 @@ jobs:
           # Execute the python script
           python3 update_resources.py
           
-          # 6. Inject Download Listener into Kotlin
+          # 5. Inject Download Listener into Kotlin
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
              echo "Injecting Download Listener Code..."
              
