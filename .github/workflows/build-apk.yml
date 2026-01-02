@@ -81,7 +81,7 @@ jobs:
              mkdir -p app/src/main/assets/www
              
              # Unzip into assets/www
-             unzip temp_dist.zip -d app/src/main/assets/www
+             unzip -o temp_dist.zip -d app/src/main/assets/www
              
              # Set URL to local file path
              URL="file:///android_asset/www/index.html"
@@ -152,7 +152,7 @@ jobs:
           fi
 
           # 3. Update build.gradle.kts and Fix Warning
-          # Suppress the compileSdk warning
+          # Suppress the compileSdk warning to allow build to proceed if warnings are treated as errors
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
           
           GRADLE_FILE="app/build.gradle.kts"
@@ -162,9 +162,10 @@ jobs:
               sed -i "s|versionCode\s*=\s*[0-9]*|versionCode = $VERSION_CODE|g" $GRADLE_FILE
               sed -i "s|versionName\s*=\s*\".*\"|versionName = \"$VERSION_NAME\"|g" $GRADLE_FILE
               
-              # Force downgrade to 34 to match AGP 8.2.2
-              sed -i "s|compileSdk\s*=\s*[0-9]*|compileSdk = 34|g" $GRADLE_FILE
-              sed -i "s|targetSdk\s*=\s*[0-9]*|targetSdk = 34|g" $GRADLE_FILE
+              # Force downgrade to 34 to match AGP 8.2.2 capabilities
+              # Also handle cases where it might be compileSdk(35) or compileSdk = 35
+              sed -i "s|compileSdk.*|compileSdk = 34|g" $GRADLE_FILE
+              sed -i "s|targetSdk.*|targetSdk = 34|g" $GRADLE_FILE
               
               if [ "$GEN_MAPPING" == "true" ]; then
                  echo "Enabling R8 Minification..."
@@ -183,44 +184,94 @@ jobs:
              sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">$THEME_COLOR</color>|g" $COLORS_FILE || true
           fi
 
-          # 5. Inject Permissions & Download Support
-          MANIFEST=$(find app/src/main -name "AndroidManifest.xml")
-          if [ -f "$MANIFEST" ]; then
-              echo "Injecting Permissions..."
+          # 5. Inject Permissions & Attributes using Python
+          # Export env vars for Python script
+          export ALLOW_DOWNLOADS
+          export PERM_CAMERA
+          export PERM_MIC
+          export PERM_LOC
+          
+          # Create and run Python script to safely edit Manifest
+          # Using quoted heredoc 'EOF' to prevent shell expansion inside python code
+          cat <<'EOF' > update_manifest.py
+          import os
+          import re
+
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          
+          # Read flags
+          allow_downloads = os.environ.get('ALLOW_DOWNLOADS') == 'true'
+          perm_camera = os.environ.get('PERM_CAMERA') == 'true'
+          perm_mic = os.environ.get('PERM_MIC') == 'true'
+          perm_loc = os.environ.get('PERM_LOC') == 'true'
+
+          try:
+              with open(manifest_path, 'r', encoding='utf-8') as f:
+                  content = f.read()
+
+              # 1. Build Permissions List
+              new_perms = []
+              # Always ensure Internet
+              if 'android.permission.INTERNET' not in content:
+                  new_perms.append('    <uses-permission android:name="android.permission.INTERNET" />')
               
-              # Build Permission Block
-              PERMS=""
-              # Always Internet
-              PERMS="$PERMS <uses-permission android:name=\"android.permission.INTERNET\" />"
+              if allow_downloads:
+                  if 'android.permission.WRITE_EXTERNAL_STORAGE' not in content:
+                      new_perms.append('    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />')
+                  if 'android.permission.READ_EXTERNAL_STORAGE' not in content:
+                      new_perms.append('    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />')
+                  if 'android.permission.POST_NOTIFICATIONS' not in content:
+                      new_perms.append('    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />')
               
-              if [ "$ALLOW_DOWNLOADS" == "true" ]; then
-                 PERMS="$PERMS <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" />"
-                 PERMS="$PERMS <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" />"
-                 PERMS="$PERMS <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />"
-              fi
+              if perm_camera and 'android.permission.CAMERA' not in content: 
+                  new_perms.append('    <uses-permission android:name="android.permission.CAMERA" />')
+              if perm_mic and 'android.permission.RECORD_AUDIO' not in content: 
+                  new_perms.append('    <uses-permission android:name="android.permission.RECORD_AUDIO" />')
+              if perm_loc and 'android.permission.ACCESS_FINE_LOCATION' not in content: 
+                  new_perms.append('    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />')
+                  new_perms.append('    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />')
+
+              # 2. Inject Permissions (Before <application>)
+              if new_perms:
+                  perm_str = '\n'.join(new_perms) + '\n'
+                  # Use replace but ensure we find the tag
+                  if '<application' in content:
+                      content = content.replace('<application', perm_str + '    <application')
+                  else:
+                      print("Error: <application> tag not found")
+                      exit(1)
               
-              if [ "$PERM_CAMERA" == "true" ]; then PERMS="$PERMS <uses-permission android:name=\"android.permission.CAMERA\" />"; fi
-              if [ "$PERM_MIC" == "true" ]; then PERMS="$PERMS <uses-permission android:name=\"android.permission.RECORD_AUDIO\" />"; fi
-              if [ "$PERM_LOC" == "true" ]; then 
-                  PERMS="$PERMS <uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />"
-                  PERMS="$PERMS <uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\" />"
-              fi
+              # 3. Inject Attributes (Into <application>)
+              # Use regex to find opening application tag up to the closing >
+              # This allows us to append attributes safely inside the tag
               
-              # Save permissions to file for safe insertion
-              echo "$PERMS" > permissions_block.xml
+              def inject_attr(match):
+                  tag_content = match.group(0)
+                  
+                  # Add usesCleartextTraffic if not present
+                  if 'android:usesCleartextTraffic' not in tag_content:
+                      tag_content = tag_content.replace('<application', '<application android:usesCleartextTraffic="true"')
+                  
+                  # Add legacy storage if needed and not present
+                  if allow_downloads and 'android:requestLegacyExternalStorage' not in tag_content:
+                      tag_content = tag_content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
+                      
+                  return tag_content
+
+              content = re.sub(r'<application[^>]*>', inject_attr, content, count=1)
+
+              with open(manifest_path, 'w', encoding='utf-8') as f:
+                  f.write(content)
               
-              # Inject Permissions BEFORE <application> tag using Perl (Slurp mode for multiline safety)
-              perl -0777 -i -pe 'BEGIN{local $/; open(F, "permissions_block.xml"); $p=<F>;} s/<application/$p\n    <application/' $MANIFEST
-              
-              # Attributes to add to <application>
-              ATTRS='android:usesCleartextTraffic="true"'
-              if [ "$ALLOW_DOWNLOADS" == "true" ]; then
-                 ATTRS='android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true"'
-              fi
-              
-              # Inject Attributes INTO <application> tag
-              perl -i -pe "s|<application|<application $ATTRS |" $MANIFEST
-          fi
+              print("Manifest updated successfully via Python.")
+
+          except Exception as e:
+              print(f"Error updating manifest: {e}")
+              exit(1)
+          EOF
+
+          # Execute the python script
+          python3 update_manifest.py
           
           # 6. Inject Download Listener into Kotlin
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
