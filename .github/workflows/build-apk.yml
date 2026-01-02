@@ -138,7 +138,7 @@ jobs:
           }
           EOF
 
-          # 1. Update MainActivity.kt
+          # 1. Update MainActivity.kt (Package Name & URL)
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
           if [ -f "$KOTLIN_PATH" ]; then
               sed -i "s|package .*|package $PACKAGE_ID|g" $KOTLIN_PATH
@@ -148,7 +148,7 @@ jobs:
               echo "Warning: MainActivity.kt not found"
           fi
 
-          # 2. Update build.gradle.kts
+          # 2. Update build.gradle.kts (Versions & IDs)
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
           
           GRADLE_FILE="app/build.gradle.kts"
@@ -177,14 +177,14 @@ jobs:
              sed -i "s|<color name=\"colorPrimaryDark\">.*</color>|<color name=\"colorPrimaryDark\">$THEME_COLOR</color>|g" $COLORS_FILE || true
           fi
 
-          # 4. Inject Permissions & Update Strings using Python (Safer for XML)
+          # 4. Inject Permissions, Attributes & App Name using Python
+          # Using Python ensures safe XML manipulation (no sed regex failures on tags)
           export ALLOW_DOWNLOADS
           export PERM_CAMERA
           export PERM_MIC
           export PERM_LOC
           export APP_NAME
           
-          # Using heredoc without indentation for the script content to avoid Python indentation errors
           cat <<'EOF' > update_resources.py
           import os
           import re
@@ -192,7 +192,7 @@ jobs:
 
           manifest_path = 'app/src/main/AndroidManifest.xml'
           strings_path = 'app/src/main/res/values/strings.xml'
-
+          
           # Read flags
           allow_downloads = os.environ.get('ALLOW_DOWNLOADS') == 'true'
           perm_camera = os.environ.get('PERM_CAMERA') == 'true'
@@ -203,6 +203,7 @@ jobs:
           # --- Task A: Update Strings.xml (Handle XML Escaping) ---
           try:
               if os.path.exists(strings_path):
+                  # Use utf-8-sig to handle potential BOM
                   with open(strings_path, 'r', encoding='utf-8-sig') as f:
                       s_content = f.read()
                   
@@ -266,11 +267,12 @@ jobs:
                   tag_content = match.group(0)
                   
                   # Add usesCleartextTraffic if not present
-                  # CRITICAL FIX: Add a trailing space to prevent attribute merging error (e.g. "true"android:label)
+                  # IMPORTANT: Add trailing space to prevent attribute merging errors
                   if 'android:usesCleartextTraffic' not in tag_content:
                       tag_content = tag_content.replace('<application', '<application android:usesCleartextTraffic="true" ')
                   
                   # Add legacy storage if needed and not present
+                  # IMPORTANT: Add trailing space here too
                   if allow_downloads and 'android:requestLegacyExternalStorage' not in tag_content:
                       tag_content = tag_content.replace('<application', '<application android:requestLegacyExternalStorage="true" ')
                       
@@ -292,11 +294,11 @@ jobs:
           # Execute the python script
           python3 update_resources.py
           
-          # Debug: Print the manifest to logs to verify structure
-          echo "=== DEBUG: MANIFEST CONTENT START ==="
+          # Debug: Print manifest to verify XML structure in logs
+          echo "=== DEBUG: MANIFEST CHECK ==="
           cat app/src/main/AndroidManifest.xml
-          echo "=== DEBUG: MANIFEST CONTENT END ==="
-          
+          echo "============================="
+
           # 5. Inject Download Listener into Kotlin
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
              echo "Injecting Download Listener Code..."
@@ -314,6 +316,7 @@ jobs:
                  sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
                  
                  # Replace MARKER_DL with file content
+                 # Use perl for reliable multiline replacement
                  perl -i -pe 'BEGIN{local $/; open(F,"download_logic.kt"); $c=<F>;} s/MARKER_DL/$c/' $KOTLIN_PATH
              fi
           fi
