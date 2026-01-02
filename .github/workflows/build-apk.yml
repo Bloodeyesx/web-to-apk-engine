@@ -184,6 +184,7 @@ jobs:
           export PERM_LOC
           export APP_NAME
           
+          # Using heredoc without indentation for the script content to avoid Python indentation errors
           cat <<'EOF' > update_resources.py
           import os
           import re
@@ -191,7 +192,7 @@ jobs:
 
           manifest_path = 'app/src/main/AndroidManifest.xml'
           strings_path = 'app/src/main/res/values/strings.xml'
-          
+
           # Read flags
           allow_downloads = os.environ.get('ALLOW_DOWNLOADS') == 'true'
           perm_camera = os.environ.get('PERM_CAMERA') == 'true'
@@ -202,7 +203,7 @@ jobs:
           # --- Task A: Update Strings.xml (Handle XML Escaping) ---
           try:
               if os.path.exists(strings_path):
-                  with open(strings_path, 'r', encoding='utf-8') as f:
+                  with open(strings_path, 'r', encoding='utf-8-sig') as f:
                       s_content = f.read()
                   
                   # SANITIZATION: Fix potential non-breaking spaces
@@ -225,7 +226,7 @@ jobs:
 
           # --- Task B: Update AndroidManifest.xml ---
           try:
-              with open(manifest_path, 'r', encoding='utf-8') as f:
+              with open(manifest_path, 'r', encoding='utf-8-sig') as f:
                   content = f.read()
               
               # SANITIZATION: Fix potential non-breaking spaces that cause "Error parsing"
@@ -255,7 +256,6 @@ jobs:
 
               # 2. Inject Permissions
               # Strategy: Find <application> and insert permissions *before* it.
-              # This assumes <application> is inside <manifest>.
               if new_perms:
                   perm_str = '\n'.join(new_perms) + '\n'
                   # Use regex with capturing group to insert before the tag
@@ -271,7 +271,6 @@ jobs:
                       tag_content = tag_content.replace('<application', '<application android:usesCleartextTraffic="true" ')
                   
                   # Add legacy storage if needed and not present
-                  # CRITICAL FIX: Add a trailing space here too
                   if allow_downloads and 'android:requestLegacyExternalStorage' not in tag_content:
                       tag_content = tag_content.replace('<application', '<application android:requestLegacyExternalStorage="true" ')
                       
@@ -293,6 +292,11 @@ jobs:
           # Execute the python script
           python3 update_resources.py
           
+          # Debug: Print the manifest to logs to verify structure
+          echo "=== DEBUG: MANIFEST CONTENT START ==="
+          cat app/src/main/AndroidManifest.xml
+          echo "=== DEBUG: MANIFEST CONTENT END ==="
+          
           # 5. Inject Download Listener into Kotlin
           if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
              echo "Injecting Download Listener Code..."
@@ -304,15 +308,12 @@ jobs:
              
              if [ ! -z "$WEBVIEW_VAR" ]; then
                  # Create code block using printf to avoid heredoc indentation issues.
-                 # Includes Try-Catch to prevent crashes on unsupported URLs (e.g. blob:)
-                 # Falls back to external Intent for non-HTTP schemes.
                  printf "\n        // Download Support Injected\n        %s.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->\n             if (url.startsWith(\"http\") || url.startsWith(\"https\")) {\n                 try {\n                     val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))\n                     request.setMimeType(mimetype)\n                     request.addRequestHeader(\"cookie\", android.webkit.CookieManager.getInstance().getCookie(url))\n                     request.addRequestHeader(\"User-Agent\", userAgent)\n                     request.setDescription(\"Downloading file...\")\n                     request.setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n                     request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)\n                     request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n                     val dm = getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager\n                     dm.enqueue(request)\n                     android.widget.Toast.makeText(applicationContext, \"Downloading...\", android.widget.Toast.LENGTH_SHORT).show()\n                 } catch (e: Exception) {\n                     android.widget.Toast.makeText(applicationContext, \"Download Error: \" + e.message, android.widget.Toast.LENGTH_LONG).show()\n                 }\n             } else {\n                 try {\n                     val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)\n                     intent.setData(android.net.Uri.parse(url))\n                     startActivity(intent)\n                 } catch (e: Exception) {\n                     android.widget.Toast.makeText(applicationContext, \"Cannot open file type\", android.widget.Toast.LENGTH_SHORT).show()\n                 }\n             }\n        }\n" "$WEBVIEW_VAR" > download_logic.kt
 
                  # Insert MARKER before loadUrl
                  sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
                  
                  # Replace MARKER_DL with file content
-                 # Use perl for reliable multiline replacement
                  perl -i -pe 'BEGIN{local $/; open(F,"download_logic.kt"); $c=<F>;} s/MARKER_DL/$c/' $KOTLIN_PATH
              fi
           fi
