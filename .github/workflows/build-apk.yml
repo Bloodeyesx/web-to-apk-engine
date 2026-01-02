@@ -184,12 +184,12 @@ jobs:
               echo "Injecting Permissions..."
               
               # Function to inject permission if missing
-              # Uses space instead of newline to prevent XML corruption on some sed versions
+              # Uses Perl for safe multiline replacement to avoid XML corruption
               inject_perm() {
                   local PERM=$1
                   if ! grep -q "$PERM" "$MANIFEST"; then
-                       # Insert before <application tag on the same line
-                       sed -i "s|<application|<uses-permission android:name=\"android.permission.$PERM\" /> <application|" $MANIFEST
+                       # Insert before <application tag
+                       perl -i -pe 's|<application|<uses-permission android:name="android.permission.'$PERM'" />\n    <application|' $MANIFEST
                   fi
               }
               
@@ -201,10 +201,10 @@ jobs:
                  inject_perm "READ_EXTERNAL_STORAGE"
                  inject_perm "POST_NOTIFICATIONS"
                  # Enable legacy storage request AND cleartext traffic for http downloads
-                 sed -i 's|<application|<application android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true"|' $MANIFEST
+                 perl -i -pe 's|<application|<application android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true"|' $MANIFEST
               else
                  # Just enable cleartext traffic for standard webview usage
-                 sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $MANIFEST
+                 perl -i -pe 's|<application|<application android:usesCleartextTraffic="true"|' $MANIFEST
               fi
               
               if [ "$PERM_CAMERA" == "true" ]; then inject_perm "CAMERA"; fi
