@@ -207,6 +207,9 @@ jobs:
                   with open(strings_path, 'r', encoding='utf-8') as f:
                       s_content = f.read()
                   
+                  # SANITIZATION: Fix potential non-breaking spaces
+                  s_content = s_content.replace('\u00A0', ' ')
+
                   # Escape special chars (e.g. "My & App" -> "My &amp; App")
                   safe_app_name = xml.sax.saxutils.escape(app_name)
                   
@@ -226,6 +229,9 @@ jobs:
           try:
               with open(manifest_path, 'r', encoding='utf-8') as f:
                   content = f.read()
+              
+              # SANITIZATION: Fix potential non-breaking spaces that cause "Error parsing"
+              content = content.replace('\u00A0', ' ')
 
               # 1. Build Permissions List
               new_perms = []
