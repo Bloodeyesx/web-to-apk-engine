@@ -213,30 +213,14 @@ jobs:
              echo "Injecting Download Listener Code..."
              
              # Detect variable name for WebView by looking for loadUrl
-             # Assumes syntax: myWebView.loadUrl(...)
              LINE_NUM=$(grep -n "loadUrl" $KOTLIN_PATH | cut -d: -f1 | head -n 1)
              LINE_CONTENT=$(sed "${LINE_NUM}q;d" $KOTLIN_PATH)
              WEBVIEW_VAR=$(echo $LINE_CONTENT | awk -F. '{print $1}' | xargs)
              
              if [ ! -z "$WEBVIEW_VAR" ]; then
-                 # Create code block
-                 cat <<EOF_DL > download_logic.kt
-                 
-        // Download Support Injected
-        $WEBVIEW_VAR.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
-            val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
-            request.setMimeType(mimetype)
-            request.addRequestHeader("cookie", android.webkit.CookieManager.getInstance().getCookie(url))
-            request.addRequestHeader("User-Agent", userAgent)
-            request.setDescription("Downloading file...")
-            request.setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))
-            request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))
-            val dm = getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
-            dm.enqueue(request)
-            android.widget.Toast.makeText(applicationContext, "Downloading...", android.widget.Toast.LENGTH_SHORT).show()
-        }
-EOF_DL
+                 # Create code block using printf to avoid heredoc indentation issues
+                 printf "\n        // Download Support Injected\n        %s.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->\n            val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))\n            request.setMimeType(mimetype)\n            request.addRequestHeader(\"cookie\", android.webkit.CookieManager.getInstance().getCookie(url))\n            request.addRequestHeader(\"User-Agent\", userAgent)\n            request.setDescription(\"Downloading file...\")\n            request.setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n            request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)\n            request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype))\n            val dm = getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager\n            dm.enqueue(request)\n            android.widget.Toast.makeText(applicationContext, \"Downloading...\", android.widget.Toast.LENGTH_SHORT).show()\n        }\n" "$WEBVIEW_VAR" > download_logic.kt
+
                  # Insert MARKER before loadUrl
                  sed -i "${LINE_NUM}i MARKER_DL" $KOTLIN_PATH
                  
