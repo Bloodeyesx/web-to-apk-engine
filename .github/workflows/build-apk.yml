@@ -302,8 +302,8 @@ jobs:
                                       put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimetype)
                                       put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
                                   }}
-                                  val uri = activity.contentValues.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                                  uri?.let {{ activity.contentValues.openOutputStream(it)?.use {{ out -> out.write(decodedBytes) }} }}
+                                  val uri = activity.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                                  uri?.let {{ activity.contentResolver.openOutputStream(it)?.use {{ out -> out.write(decodedBytes) }} }}
                                   activity.runOnUiThread {{ android.widget.Toast.makeText(activity, "Saved: $fileName", android.widget.Toast.LENGTH_LONG).show() }}
                               }}
                           }} catch (e: Exception) {{ }}
