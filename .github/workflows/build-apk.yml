@@ -294,7 +294,7 @@ jobs:
                               val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
                               val mimeTypeMap = android.webkit.MimeTypeMap.getSingleton()
                               val extension = mimeTypeMap.getExtensionFromMimeType(mimetype) ?: "bin"
-                              val fileName = "download_${{System.currentTimeMillis()}}.$extension"
+                              val fileName = "download_" + System.currentTimeMillis() + "." + extension
                               
                               if (android.os.Build.VERSION.SDK_INT >= 29) {{
                                   val contentValues = android.content.ContentValues().apply {{
