@@ -1,3 +1,4 @@
+
 name: Automated Release Factory
 on:
   repository_dispatch:
@@ -8,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -16,7 +18,9 @@ jobs:
           cache: gradle
 
       - name: Repair Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.5 --distribution-type bin
+        run: |
+          chmod +x gradlew
+          ./gradlew wrapper --gradle-version 8.5 --distribution-type bin
 
       - name: DYNAMIC INJECTION (The Secret Sauce)
         env:
@@ -24,6 +28,7 @@ jobs:
           PAYLOAD_PACKAGE: ${{ github.event.client_payload.general.package_id }}
           PAYLOAD_URL: ${{ github.event.client_payload.general.url }}
           PAYLOAD_ZIP: ${{ github.event.client_payload.general.dist_zip_content }}
+          PAYLOAD_UPLOADED_FILE: ${{ github.event.client_payload.general.uploaded_filename }}
           PAYLOAD_V_CODE: ${{ github.event.client_payload.general.version_code }}
           PAYLOAD_V_NAME: ${{ github.event.client_payload.general.version_name }}
           PAYLOAD_COLOR: ${{ github.event.client_payload.design.theme_color }}
@@ -51,25 +56,93 @@ jobs:
           GEN_MAPPING=$(resolve_var "$PAYLOAD_MAPPING" "false")
           TARGET_SDK=$(resolve_var "$PAYLOAD_TARGET_SDK" "35")
           
+          # Persist to GITHUB_ENV for subsequent steps
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          
           # Export for Python scripts
           export ALLOW_DOWNLOADS=$(resolve_var "$PAYLOAD_DOWNLOADS" "false")
           export PERM_CAMERA=$(resolve_var "$PAYLOAD_PERM_CAMERA" "false")
           export PERM_MIC=$(resolve_var "$PAYLOAD_PERM_MIC" "false")
           export PERM_LOC=$(resolve_var "$PAYLOAD_PERM_LOC" "false")
+          export THEME_COLOR
 
-          # Handle Source
+          # Handle Source (Hybrid: Embedded Base64 OR Uploaded File)
           if [ ! -z "$PAYLOAD_ZIP" ] && [ "$PAYLOAD_ZIP" != "null" ]; then
              echo "Detected Embedded Zip Payload. Processing..."
-             echo "$PAYLOAD_ZIP" | base64 --decode > temp_dist.zip
-             mkdir -p app/src/main/assets/www
-             unzip -o temp_dist.zip -d app/src/main/assets/www
-             URL="file:///android_asset/www/index.html"
-             rm temp_dist.zip
+             if echo "$PAYLOAD_ZIP" | base64 --decode > temp_dist.zip; then
+                 mkdir -p app/src/main/assets/www
+                 unzip -o temp_dist.zip -d app/src/main/assets/www
+                 # Dynamic URL detection
+                 REL_PATH=$(find app/src/main/assets/www -name "index.html" | head -n 1 | sed 's|app/src/main/assets/||')
+                 URL="file:///android_asset/$REL_PATH"
+                 rm temp_dist.zip
+             else
+                 echo "::error::Failed to decode ZIP payload."
+                 exit 1
+             fi
+          elif [ ! -z "$PAYLOAD_UPLOADED_FILE" ] && [ "$PAYLOAD_UPLOADED_FILE" != "null" ]; then
+             echo "Detected Uploaded Zip Asset at $PAYLOAD_UPLOADED_FILE. Processing..."
+             if [ -f "$PAYLOAD_UPLOADED_FILE" ]; then
+                 mkdir -p app/src/main/assets/www
+                 unzip -o "$PAYLOAD_UPLOADED_FILE" -d app/src/main/assets/www
+                 # Dynamic URL detection
+                 REL_PATH=$(find app/src/main/assets/www -name "index.html" | head -n 1 | sed 's|app/src/main/assets/||')
+                 URL="file:///android_asset/$REL_PATH"
+             else
+                 echo "Error: Uploaded file not found in repository at path: $PAYLOAD_UPLOADED_FILE"
+                 exit 1
+             fi
           else
-             URL=$(resolve_var "$PAYLOAD_URL" "https://example.com")
+             # Use "about:blank" if no URL is provided to avoid example.com
+             URL=$(resolve_var "$PAYLOAD_URL" "about:blank")
           fi
 
-          # 2. INJECT STRINGS & PACKAGE
+          # 2. SANITIZE HTML (Fix absolute paths for WebView)
+          cat <<'EOF' > sanitize_html.py
+          import os
+          import re
+
+          # Find index.html recursively in assets
+          html_path = None
+          for root, dirs, files in os.walk('app/src/main/assets/www'):
+              if 'index.html' in files:
+                  html_path = os.path.join(root, 'index.html')
+                  break
+
+          if html_path:
+              print(f"Sanitizing {html_path}...")
+              try:
+                  with open(html_path, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  
+                  new_content = content
+
+                  # 1. Fix <base href="/"> which kills React apps in file://
+                  if '<base' in new_content:
+                      new_content = re.sub(r'<base\s+href=["\']\/["\']\s*\/?>', '<base href="./">', new_content, flags=re.IGNORECASE)
+
+                  # 2. Convert absolute paths (src="/...") to relative (src="./...")
+                  # Ignores protocol relative URLs (//domain.com)
+                  def replacer(match):
+                      # match.group(0) is like src="/assets/..."
+                      return match.group(0).replace('="/', '="./').replace("='/", "='./")
+
+                  new_content = re.sub(r'(src|href)=["\']/(?!/)[^"\']*["\']', replacer, new_content)
+                  
+                  # 3. Inject <base href="./"> if missing to help with relative resolution
+                  if '<base' not in new_content and '<head>' in new_content:
+                      new_content = new_content.replace('<head>', '<head>\n<base href="./">')
+                  
+                  with open(html_path, 'w', encoding='utf-8') as f:
+                      f.write(new_content)
+                  print("Sanitization complete.")
+              except Exception as e:
+                  print(f"Warning: Failed to sanitize HTML: {e}")
+          EOF
+          python3 sanitize_html.py
+
+          # 3. INJECT STRINGS & PACKAGE
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" app/src/main/res/values/strings.xml
           
           KOTLIN_PATH=$(find app/src/main/java -name "MainActivity.kt")
@@ -80,7 +153,7 @@ jobs:
               sed -i "s|PLACEHOLDER_URL|$URL|g" $KOTLIN_PATH
           fi
 
-          # 3. BUILD GRADLE CONFIG
+          # 4. BUILD GRADLE CONFIG
           echo "android.suppressUnsupportedCompileSdk=35" >> gradle.properties
           GRADLE_FILE="app/build.gradle.kts"
           if [ -f "$GRADLE_FILE" ]; then
@@ -97,7 +170,7 @@ jobs:
               fi
           fi
 
-          # 4. PYTHON MANIFEST INJECTION
+          # 5. PYTHON MANIFEST INJECTION
           cat <<'EOF' > update_manifest.py
           import os
           import sys
@@ -135,57 +208,93 @@ jobs:
                   new_perms.append('    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />')
                   new_perms.append('    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />')
 
-              def update_app_tag(match):
-                  tag = match.group(0)
-                  if 'android:usesCleartextTraffic' not in tag:
-                      tag = tag.replace('<application', '<application android:usesCleartextTraffic="true"')
-                  if allow_downloads and 'android:requestLegacyExternalStorage' not in tag:
-                      tag = tag.replace('<application', '<application android:requestLegacyExternalStorage="true"')
-                  return tag
+              def update_manifest_content(match):
+                  original_tag = match.group(0)
+                  modified_tag = original_tag
+                  
+                  # Inject Attributes
+                  if 'android:usesCleartextTraffic' not in modified_tag:
+                      modified_tag = modified_tag.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+                  
+                  if allow_downloads and 'android:requestLegacyExternalStorage' not in modified_tag:
+                      modified_tag = modified_tag.replace('<application', '<application android:requestLegacyExternalStorage="true"', 1)
+                  
+                  # Prepend Permissions
+                  if new_perms:
+                      perm_string = '\n'.join(new_perms)
+                      return f"{perm_string}\n    {modified_tag}"
+                  
+                  return modified_tag
 
-              content = re.sub(r'<application[^>]*>', update_app_tag, content, count=1)
+              content = re.sub(r'<application[^>]*>', update_manifest_content, content, count=1)
               
-              if len(new_perms) > 0:
-                  perm_string = '\n'.join(new_perms)
-                  content = content.replace('<application', perm_string + '\n    <application')
-
               with open(manifest_path, 'w', encoding='utf-8') as f:
                   f.write(content)
                   
           except Exception as e:
-              print(e)
+              print(f"Error updating manifest: {e}")
               sys.exit(1)
           EOF
           
           python3 update_manifest.py
           
-          # 5. KOTLIN DOWNLOAD LISTENER INJECTION
-          if [ "$ALLOW_DOWNLOADS" == "true" ] && [ -f "$KOTLIN_PATH" ]; then
-             # Improved regex to capture 'binding.webView.loadUrl' correctly
+          # 6. KOTLIN INJECTION (WebView Settings & Downloads)
+          if [ -f "$KOTLIN_PATH" ]; then
              WEBVIEW_VAR=$(grep -o "[^ ]*\.loadUrl" $KOTLIN_PATH | head -n 1 | sed 's/\.loadUrl//')
-             # Fallback if variable is empty (e.g. if loadUrl is called differently)
              if [ -z "$WEBVIEW_VAR" ]; then
                 WEBVIEW_VAR=$(grep "loadUrl" $KOTLIN_PATH | head -n 1 | awk -F. '{print $1}' | xargs)
              fi
              export WEBVIEW_VAR
+             export ALLOW_DOWNLOADS
              
              if [ ! -z "$WEBVIEW_VAR" ]; then
-                 cat <<'EOF' > inject_download.py
+                 cat <<'EOF' > inject_kotlin.py
           import os
 
           kotlin_path = os.environ['KOTLIN_PATH']
           webview_var = os.environ['WEBVIEW_VAR']
+          allow_downloads = os.environ['ALLOW_DOWNLOADS'] == 'true'
 
-          code = f"""
-                  // Advanced Download & Blob Support (MediaStore)
-                  class BlobHandler(private val context: android.content.Context) {{
+          # Essential Settings for Vue/React SPAs
+          spa_settings = f"""
+                  {webview_var}.settings.apply {{
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      databaseEnabled = true
+                      allowFileAccess = true
+                      allowContentAccess = true
+                      allowFileAccessFromFileURLs = true
+                      allowUniversalAccessFromFileURLs = true
+                      cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                      mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                  }}
+                  
+                  {webview_var}.webViewClient = object : android.webkit.WebViewClient() {{
+                      override fun shouldOverrideUrlLoading(view: android.webkit.WebView?, request: android.webkit.WebResourceRequest?): Boolean {{
+                          val url = request?.url.toString()
+                          // Keep local assets and internal navigation inside
+                          if (url.startsWith("file:") || url.contains("localhost")) return false
+                          
+                          // Open external links in Browser
+                          try {{
+                              val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                              startActivity(intent)
+                          }} catch (e: Exception) {{ return false }}
+                          return true
+                      }}
+                  }}
+          """
+
+          download_code = f"""
+                  // Advanced Download & Blob Support
+                  class BlobHandler(private val activity: android.app.Activity) {{
                       @android.webkit.JavascriptInterface
                       fun handleBlob(base64Data: String, mimetype: String) {{
                           try {{
                               val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
-                              val ext = if (mimetype.contains("/")) mimetype.split("/")[1] else "bin"
-                              val timestamp = System.currentTimeMillis()
-                              val fileName = "download_$timestamp.$ext"
+                              val mimeTypeMap = android.webkit.MimeTypeMap.getSingleton()
+                              val extension = mimeTypeMap.getExtensionFromMimeType(mimetype) ?: "bin"
+                              val fileName = "download_${{System.currentTimeMillis()}}.$extension"
                               
                               if (android.os.Build.VERSION.SDK_INT >= 29) {{
                                   val contentValues = android.content.ContentValues().apply {{
@@ -193,120 +302,127 @@ jobs:
                                       put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimetype)
                                       put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
                                   }}
-                                  val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                                  if (uri != null) {{
-                                      context.contentResolver.openOutputStream(uri)?.use {{ it.write(decodedBytes) }}
-                                      (context as? android.app.Activity)?.runOnUiThread {{
-                                          android.widget.Toast.makeText(context, "Saved to Downloads", android.widget.Toast.LENGTH_LONG).show()
-                                      }}
-                                  }} else {{
-                                      throw Exception("Failed to create MediaStore entry")
-                                  }}
-                              }} else {{
-                                  // Legacy Storage
-                                  val path = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                                  val file = java.io.File(path, fileName)
-                                  java.io.FileOutputStream(file).use {{ it.write(decodedBytes) }}
-                                  android.media.MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null)
-                                  (context as? android.app.Activity)?.runOnUiThread {{
-                                      android.widget.Toast.makeText(context, "Saved to Downloads", android.widget.Toast.LENGTH_LONG).show()
-                                  }}
+                                  val uri = activity.contentValues.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                                  uri?.let {{ activity.contentValues.openOutputStream(it)?.use {{ out -> out.write(decodedBytes) }} }}
+                                  activity.runOnUiThread {{ android.widget.Toast.makeText(activity, "Saved: $fileName", android.widget.Toast.LENGTH_LONG).show() }}
                               }}
-                          }} catch (e: Exception) {{
-                               (context as? android.app.Activity)?.runOnUiThread {{
-                                  android.widget.Toast.makeText(context, "Download Error: " + e.message, android.widget.Toast.LENGTH_SHORT).show()
-                              }}
-                          }}
+                          }} catch (e: Exception) {{ }}
                       }}
                   }}
-
                   {webview_var}.addJavascriptInterface(BlobHandler(this), "BlobHandler")
-                  {webview_var}.settings.javaScriptEnabled = true
-
                   {webview_var}.setDownloadListener {{ url, userAgent, contentDisposition, mimetype, contentLength ->
-                      try {{
-                          if (url.startsWith("http://") || url.startsWith("https://")) {{
-                              val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
-                              val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
-                              request.setMimeType(mimetype)
-                              request.addRequestHeader("cookie", android.webkit.CookieManager.getInstance().getCookie(url))
-                              request.addRequestHeader("User-Agent", userAgent)
-                              request.setTitle(fileName)
-                              request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                              request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
-                              (getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
-                              android.widget.Toast.makeText(applicationContext, "Downloading...", android.widget.Toast.LENGTH_SHORT).show()
-                          }} else if (url.startsWith("data:")) {{
-                              val base64Data = url.substring(url.indexOf(",") + 1)
-                              BlobHandler(this).handleBlob(base64Data, mimetype)
-                          }} else if (url.startsWith("blob:")) {{
-                              val js = "var xhr = new XMLHttpRequest(); " +
-                                       "xhr.open('GET', '" + url + "', true); " +
-                                       "xhr.responseType = 'blob'; " +
-                                       "xhr.onload = function(e) {{ " +
-                                       "  if (this.status == 200) {{ " +
-                                       "    var blob = this.response; " +
-                                       "    var reader = new FileReader(); " +
-                                       "    reader.readAsDataURL(blob); " +
-                                       "    reader.onloadend = function() {{ " +
-                                       "      var base64data = reader.result.split(',')[1]; " +
-                                       "      BlobHandler.handleBlob(base64data, blob.type); " +
-                                       "    }} " +
-                                       "  }} " +
-                                       "}}; " +
-                                       "xhr.send();"
-                              {webview_var}.evaluateJavascript(js, null)
-                              android.widget.Toast.makeText(applicationContext, "Processing blob...", android.widget.Toast.LENGTH_SHORT).show()
-                          }} else {{
-                              val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                              startActivity(intent)
-                          }}
-                      }} catch (e: Exception) {{
-                          android.widget.Toast.makeText(applicationContext, "Link error: " + e.message, android.widget.Toast.LENGTH_SHORT).show()
+                      if (url.startsWith("http")) {{
+                          val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
+                          val name = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
+                          request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, name)
+                          request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                          (getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
+                      }} else if (url.startsWith("data:")) {{
+                          BlobHandler(this).handleBlob(url.substring(url.indexOf(",") + 1), mimetype)
                       }}
                   }}
           """
 
           try:
-              with open(kotlin_path, 'r', encoding='utf-8') as f:
-                  lines = f.readlines()
-              
-              inject_idx = -1
-              for i, line in enumerate(lines):
-                  if "loadUrl" in line:
-                      inject_idx = i
-                      break
-              
-              if inject_idx != -1:
-                  lines.insert(inject_idx, code)
-                  with open(kotlin_path, 'w', encoding='utf-8') as f:
-                      f.writelines(lines)
-                  print("Injected Advanced Download Listener")
-              else:
-                  print("Could not find loadUrl anchor")
-          except Exception as e:
-              print(f"Error injecting kotlin: {e}")
+              with open(kotlin_path, 'r') as f: lines = f.readlines()
+              idx = next(i for i, line in enumerate(lines) if "loadUrl" in line)
+              lines.insert(idx, spa_settings)
+              if allow_downloads: lines.insert(idx + 1, download_code)
+              with open(kotlin_path, 'w') as f: f.writelines(lines)
+          except Exception as e: print(e)
           EOF
-                 python3 inject_download.py
+                 python3 inject_kotlin.py
              fi
           fi
+          
+          # 7. THEME COLOR INJECTION
+          cat <<'EOF' > inject_theme.py
+          import os
+          import glob
+          import re
+
+          theme_color = os.environ.get('THEME_COLOR')
+          if not theme_color:
+              sys.exit(0)
+
+          # Find all themes.xml or colors.xml
+          res_dir = 'app/src/main/res'
+          
+          files = glob.glob(f'{res_dir}/**/themes.xml', recursive=True) + glob.glob(f'{res_dir}/**/colors.xml', recursive=True)
+          
+          for file_path in files:
+              try:
+                  with open(file_path, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  
+                  new_content = content
+                  # Replace colorPrimary
+                  new_content = re.sub(r'(<item name="colorPrimary">)\s*#[0-9A-Fa-f]{6,8}\s*(</item>)', f'\\1{theme_color}\\2', new_content)
+                  # Replace colorPrimaryVariant
+                  new_content = re.sub(r'(<item name="colorPrimaryVariant">)\s*#[0-9A-Fa-f]{6,8}\s*(</item>)', f'\\1{theme_color}\\2', new_content)
+                  # Replace statusBarColor if defined explicitly
+                  new_content = re.sub(r'(<item name="android:statusBarColor">)\s*#[0-9A-Fa-f]{6,8}\s*(</item>)', f'\\1{theme_color}\\2', new_content)
+                  
+                  # If colors.xml, find <color name="primary">...</color> etc if exists
+                  if 'colors.xml' in file_path:
+                      new_content = re.sub(r'(<color name=".*primary.*">)\s*#[0-9A-Fa-f]{6,8}\s*(</color>)', f'\\1{theme_color}\\2', new_content)
+
+                  if new_content != content:
+                      print(f"Updating theme color in {file_path}")
+                      with open(file_path, 'w', encoding='utf-8') as f:
+                          f.write(new_content)
+              except Exception as e:
+                  print(f"Skipping {file_path}: {e}")
+          EOF
+          python3 inject_theme.py
 
       - name: Decode Keystore
-        run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > $GITHUB_WORKSPACE/release-key.jks
+        run: |
+          if [ -z "${{ secrets.SIGNING_KEY }}" ]; then
+            echo "::error::SIGNING_KEY secret is missing."
+            exit 1
+          fi
+          echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > $GITHUB_WORKSPACE/release-key.jks
+
+      - name: Validate Keystore
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/release-key.jks" ]; then
+            # Verify keystore content non-interactively
+            if ! keytool -list -v -keystore $GITHUB_WORKSPACE/release-key.jks -alias ${{ secrets.ALIAS }} -storepass ${{ secrets.KEY_STORE_PASSWORD }}; then
+               echo "::error::Keystore validation failed. Check ALIAS and KEY_STORE_PASSWORD."
+               exit 1
+            fi
+          else
+            echo "::error::Keystore file not found."
+            exit 1
+          fi
 
       - name: Build Signed AAB and APK
         run: |
-          ./gradlew bundleRelease assembleDebug \
+          # Builds both AAB (Bundle) and APK (Release)
+          ./gradlew bundleRelease assembleRelease \
             -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/release-key.jks \
             -Pandroid.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }} \
             -Pandroid.injected.signing.key.alias=${{ secrets.ALIAS }} \
             -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
 
+      - name: Verify APK Signature
+        run: |
+          BUILD_TOOLS_VERSION=$(ls $ANDROID_HOME/build-tools | sort -n | tail -1)
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [ -f "$APK_PATH" ]; then
+             echo "Verifying signature for $APK_PATH with build-tools $BUILD_TOOLS_VERSION..."
+             $ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner verify --verbose "$APK_PATH"
+          else
+             echo "::warning::Release APK not found at $APK_PATH, skipping verification."
+          fi
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME || 'App' }}-v${{ env.VERSION_NAME || '1.0' }}
+          retention-days: 7
           path: |
             app/build/outputs/bundle/release/app-release.aab
-            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
             app/build/outputs/mapping/release/mapping.txt
