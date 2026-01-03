@@ -19,8 +19,8 @@ jobs:
 
       - name: Repair Gradle Wrapper
         run: |
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
           chmod +x gradlew
-          ./gradlew wrapper --gradle-version 8.5 --distribution-type bin
 
       - name: DYNAMIC INJECTION (The Secret Sauce)
         env:
